@@ -1,7 +1,6 @@
 name: Publish to the Wizard App Index
 on:
-  push:
-    branches: [main]
+  # Fork of oscarhenrycollins/chatgpt-connection; Miguel's repo stays canonical in the index.
   workflow_dispatch:
 jobs:
   publish:

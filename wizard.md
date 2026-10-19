@@ -9,7 +9,7 @@ version: 0.2.0
 summary: Connect your ChatGPT subscription once; your agent signs in with it and Wizard shows it as connected.
 icon: icon.png
 license: MIT
-source: https://github.com/oscarhenrycollins/chatgpt-connection
+source: https://github.com/humanitylabs-org/chatgpt-connection
 runtime:
   kind: runtipi
   config: runtipi/config.json

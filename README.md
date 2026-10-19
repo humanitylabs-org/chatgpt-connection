@@ -1,5 +1,9 @@
 # ChatGPT
 
+## Source and fork
+
+Release fork of [oscarhenrycollins/chatgpt-connection](https://github.com/oscarhenrycollins/chatgpt-connection). Miguel's repository remains canonical in the public Wizard App Index; this fork is installed explicitly by repository and does not automatically publish to that index. Engine images are built from these sources in `humanitylabs-org/wizard-app-store`.
+
 Connect your ChatGPT subscription once; your agent signs in with it and Wizard shows it as connected.
 
 A [Wizard app](https://www.aiwizards.com/wizard-apps) (System App) and the ChatGPT **AI connection** app under decision #61 (one connection app per AI provider). Open its page, press **Connect**, open the ChatGPT link and enter the short code. The page finishes by itself.
@@ -104,6 +108,6 @@ No live plugin install, dashboard restart or real ChatGPT call is part of these 
 - `server.py`, `static/`, `Dockerfile`: the page image `ghcr.io/humanitylabs-org/wizard-chatgpt`, built and published from `humanitylabs-org/wizard-app-store` `images/wizard-chatgpt`.
 - `test-chatgpt.py`, `test-container.sh`: the stand-in-dashboard and container tests CI runs before publishing.
 - `SKILL.md`: the skill the agent loads when this app is installed.
-- `.github/workflows/publish.yml`: every push to `main` re-publishes to the index.
+- `.github/workflows/publish.yml`: manual dispatch only; do not publish this fork under the canonical app ID.
 
 Replaces the ChatGPT part of [AI Accounts](https://github.com/oscarhenrycollins/ai-accounts). For your own subscription on your own server.
