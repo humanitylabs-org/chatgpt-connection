@@ -17,6 +17,8 @@ services:
       UPSTREAM_HOST: wizard-chatgpt-engine
       UPSTREAM_PORT: "8801"
       PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:${APP_PORT}:8801"
     depends_on: [wizard-chatgpt-engine]
     command:
     - python
@@ -240,7 +242,7 @@ services:
       is_main: true
       internal_port: 8801
   wizard-chatgpt-engine:
-    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.1.4@sha256:0cb8fb715f8f06b2225b7dd93d22d84fe58d4ef218586a9f4c8009afc90462c2
+    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.0@sha256:2d2210bc1fff03d178881b32215e66e0bc731c03a6337a21c9327a8b02ff7237
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
