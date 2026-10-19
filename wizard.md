@@ -5,7 +5,7 @@ name: ChatGPT
 type: external
 category: system
 tags: [security]
-version: 0.2.0
+version: 0.2.1
 summary: Connect your ChatGPT subscription once; your agent signs in with it and Wizard shows it as connected.
 icon: icon.png
 license: MIT

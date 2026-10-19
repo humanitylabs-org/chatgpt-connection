@@ -242,7 +242,7 @@ services:
       is_main: true
       internal_port: 8801
   wizard-chatgpt-engine:
-    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.0@sha256:2d2210bc1fff03d178881b32215e66e0bc731c03a6337a21c9327a8b02ff7237
+    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.1@sha256:a7190ca9f3be08ca70e085d9042aadb43cd0a53d3d3a9f0efa0f236427c7080a
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
