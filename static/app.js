@@ -11,12 +11,13 @@ function say(text, kind) {
 }
 
 async function call(path, body) {
-  const res = await fetch(path, {
+  let res;
+  try { res = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers: body === undefined ? {} : { "Content-Type": "application/json", "X-Wizard-Request": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
-  });
+  }); } catch (_) { return {ok: false, message: "The ChatGPT app is unreachable. Try again."}; }
   let data = {};
   try { data = await res.json(); } catch (_) { data = { ok: false, message: "No answer from the app." }; }
   return data;
@@ -47,12 +48,11 @@ function render(accounts) {
     if (a.status === "connected") {
       const who = a.account ? ` (${a.account})` : "";
       li.append(el("p", "state ok", `Connected${who}`));
-      li.append(el("p", "state", a.in_use ? `Your agent uses ChatGPT${a.model ? " (" + a.model + ")" : ""}.`
-        : "Your agent uses another account right now."));
-      if (!a.in_use) row.append(button("Use ChatGPT", useIt, true));
+      li.append(el("p", "state", `Hermes: ${a.integration || "not registered"}. Your default model is unchanged.`));
+      row.append(button("Test", testIt, true));
       row.append(button("Disconnect", disconnect));
-    } else if (a.status === "not_connected") {
-      li.append(el("p", "state off", "Not connected"));
+    } else if (a.status === "not_connected" || a.status === "expired") {
+      li.append(el("p", "state off", a.status === "expired" ? "Login expired — reconnect" : "Not connected"));
       row.append(button("Connect", connect, true));
     } else {
       li.append(el("p", "state bad", a.problem || "Something is wrong with this app."));
@@ -104,10 +104,9 @@ function connect() {
   });
 }
 
-function useIt() {
-  if (!confirm("Switch your agent to ChatGPT for new chats?")) return;
-  return run("Switching…", async () => {
-    const data = await call("api/chatgpt/use", {});
+function testIt() {
+  return run("Testing the ChatGPT connection…", async () => {
+    const data = await call("api/chatgpt/test", {});
     say(data.message, data.ok ? "ok" : "bad");
   });
 }
@@ -126,6 +125,24 @@ $("cancel").addEventListener("click", async () => {
   loginId = "";
   await call("api/chatgpt/cancel", {});
   say("");
+});
+
+history.replaceState({chatgpt: "root"}, "");
+history.pushState({chatgpt: "guard"}, "");
+let lastRootBack = 0;
+addEventListener("popstate", () => {
+  if (loginId) {
+    stopPolling();
+    loginId = "";
+    $("login").hidden = true;
+    call("api/chatgpt/cancel", {});
+    say("");
+    history.pushState({chatgpt: "guard"}, "");
+  } else if (Date.now() - lastRootBack > 2000) {
+    lastRootBack = Date.now();
+    say("Press back again to exit.");
+    history.pushState({chatgpt: "guard"}, "");
+  }
 });
 
 refresh();

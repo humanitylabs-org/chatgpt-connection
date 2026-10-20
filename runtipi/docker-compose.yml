@@ -12,7 +12,7 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APP: wizard-chatgpt
-      APP_VERSION: 0.2.1
+      APP_VERSION: 0.3.0-dev
       FRONT_PORT: "8801"
       UPSTREAM_HOST: wizard-chatgpt-engine
       UPSTREAM_PORT: "8801"
@@ -206,7 +206,7 @@ services:
 
       # ---- tools for this app ----
       # Read-only by design: connecting, switching and disconnecting are owner actions on the ChatGPT page.
-      # The MCP only reports the wizard.ai-connection/1 answer (status, account label, usage), never a token.
+      # The MCP reports app-owned wizard.ai-connection/2 status and usage, never a token.
       # Box-only: a call that came through Tailscale Serve, a tunnel or a proxy is refused; agents reach this
       # MCP on the app network (http://wizard-chatgpt:8801/mcp), which adds none of these headers.
 
@@ -214,11 +214,10 @@ services:
 
 
       @tool("connection_status", "ChatGPT subscription status on this Wizard: connected / not_connected / expired / error, "
-            "the account label when known, and an error message that says what to do. usage is always null here (the app "
-            "holds no ChatGPT token); Wizard's Resources screen shows ChatGPT usage from the agent's own sign-in. "
+            "plan and usage from the app-owned login, and an error message that says what to do. "
             "Read-only; never returns a token.")
       def connection_status():
-          if any(k in PROXY_HEADERS or k.startswith("cf-") for k in REQUEST.get()):
+          if any(k in PROXY_HEADERS or k in ("origin", "referer", "cookie", "via") or k.startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in REQUEST.get()):
               raise PermissionError("box-only: call this MCP from the server (app network), not through the tailnet or a proxy")
           headers = {}
           auth = REQUEST.get().get("authorization")
@@ -229,9 +228,8 @@ services:
           if d.get("status") == "not_connected":
               d["next"] = ("Ask the owner to open the ChatGPT app, press Connect, open the ChatGPT link and enter the code "
                            "shown. Never ask for the code or a token in chat.")
-          elif d.get("status") == "error":
-              d["next"] = ("Tell the owner the plain message in error.message. If the agent is the owner's own Hermes outside "
-                           "Wizard Apps, he signs in there with `hermes auth add openai-codex`.")
+          elif d.get("status") in ("error", "expired"):
+              d["next"] = "Tell the owner error.message; reconnect in this app when expired, never in Hermes."
           return d
 
 
@@ -256,10 +254,14 @@ services:
       WIZARD_CHATGPT_PASSWORD: ${WIZARD_CHATGPT_PASSWORD:-}
       WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
       WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
-      # The agent whose own ChatGPT sign-in this app drives: the Hermes Agent app's dashboard by default.
+      APP_DATA_DIR: /data
+      WIZARD_CHATGPT_AGENT_URL: ${WIZARD_CHATGPT_AGENT_URL:-http://wizard-chatgpt:8801/v1}
+      # Dashboard access is used ONLY to register a box-local bearer, never for OAuth or inference.
       WIZARD_CHATGPT_HERMES_URL: ${WIZARD_CHATGPT_HERMES_URL:-http://hermes-agent:9119}
       WIZARD_CHATGPT_HERMES_USER: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-hermes}
       WIZARD_CHATGPT_HERMES_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
     x-runtipi:
       # Joins the Runtipi main network so it can reach the Hermes Agent app by name.
       add_to_main_network: true

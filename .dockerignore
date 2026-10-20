@@ -2,6 +2,7 @@
 !Dockerfile
 !server.py
 !inference.py
+!codex.py
 !SKILL.md
 !LICENSE
 !static/

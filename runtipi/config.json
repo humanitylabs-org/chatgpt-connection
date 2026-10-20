@@ -9,9 +9,9 @@
   "categories": [
     "network"
   ],
-  "description": "Connect your ChatGPT Plus or Pro subscription to your Wizard server once. The sign-in is your Hermes Agent's own ChatGPT login (a short code you approve on ChatGPT), so Hermes keeps and renews it and this app never sees it. The app shows whether ChatGPT is connected and reports that to Wizard's Resources screen; usage numbers there come from the agent's own sign-in. Needs the Hermes Agent app from Wizard Apps.",
+  "description": "Connect your ChatGPT Plus or Pro subscription to your Wizard server once. This app owns and renews the ChatGPT login in its app-data folder. Stock Hermes receives only a box-local bearer and calls this app for models and quota. Connecting leaves the default Hermes model unchanged.",
   "tipi_version": 2,
-  "version": "0.2.1",
+  "version": "0.3.0-dev",
   "source": "https://github.com/humanitylabs-org/chatgpt-connection",
   "exposable": false,
   "supported_architectures": [
@@ -36,17 +36,17 @@
       "type": "text",
       "label": "Hermes Agent dashboard username",
       "env_variable": "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
-      "required": true,
+      "required": false,
       "default": "hermes",
-      "hint": "Filled in automatically from your Hermes Agent app. Used only to start ChatGPT sign-in inside the agent."
+      "hint": "Filled in automatically from your Hermes Agent app. Used only to register the private model endpoint; login stays in this app."
     },
     {
       "type": "password",
       "label": "Hermes Agent dashboard password",
       "env_variable": "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
-      "required": true,
+      "required": false,
       "min": 16,
-      "hint": "Filled in automatically from your Hermes Agent app (the same dashboard password). ChatGPT signs in inside Hermes, so this app never sees that token."
+      "hint": "Filled in automatically from your Hermes Agent app (the same dashboard password). Used only for endpoint registration, never for ChatGPT login or model calls."
     },
     {
       "type": "text",

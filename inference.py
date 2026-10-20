@@ -24,8 +24,8 @@ class Fault(Exception):
 
 def admit(headers):
     """Same grants file shape as the router; no owner/browser credentials accepted."""
-    refused = {"origin", "tailscale-user-login", "x-forwarded-for", "forwarded", "x-real-ip"}
-    if any(k.lower() in refused or k.lower().startswith("cf-") for k in headers):
+    refused = {"origin", "referer", "cookie", "tailscale-user-login", "forwarded", "x-real-ip", "via"}
+    if any(k.lower() in refused or k.lower().startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in headers):
         raise Fault(message="Inference is box-only.", status=403)
     path = os.environ.get("WIZARD_GRANTS_FILE")
     grants = {"enforce": False, "incoming": []}
@@ -52,14 +52,14 @@ def admit(headers):
     return False
 
 
-def body(handler):
+def body(handler, max_body=MAX_BODY):
     if handler.headers.get("Transfer-Encoding") or handler.headers.get("Content-Encoding"):
         raise Fault(message="Encoded request bodies are unsupported.", status=415)
     if handler.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
         raise Fault(message="JSON only.", status=415)
     try:
         n = int(handler.headers.get("Content-Length", "0"))
-        if not 0 < n <= MAX_BODY:
+        if not 0 < n <= max_body:
             raise ValueError()
     except ValueError:
         raise Fault("limit", "Invalid request size.", 413) from None
@@ -71,7 +71,9 @@ def body(handler):
             out[k] = v
         return out
     try:
-        data = json.loads(handler.rfile.read(n), object_pairs_hook=pairs)
+        if len(handler.headers.get_all("Content-Length", [])) != 1:
+            raise ValueError()
+        data = json.loads(handler.rfile.read(n), object_pairs_hook=pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
         if not isinstance(data, dict):
             raise ValueError()
         return data
@@ -108,118 +110,6 @@ def emit(handler, event):
     handler.wfile.flush()
 
 
-from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, Request
-
-MODELS_PATH = "/api/plugins/wizard-os/models/chatgpt"
-INFER_PATH = "/api/plugins/wizard-os/infer/chatgpt"
-REQUIRED = "Hermes plugin wizard-os >=0.4.0 required"
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def models(hermes):
-    payload = hermes.call("GET", MODELS_PATH, timeout=8)
-    try:
-        if not isinstance(payload, dict):
-            raise ValueError()
-        rows = payload.get("models")
-        if not isinstance(rows, list):
-            raise ValueError()
-        seen = set()
-        for m in rows:
-            if (not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"] or m["id"] in seen
-                    or not isinstance(m.get("label"), str) or m.get("tier") not in ("fast", "standard", "frontier")
-                    or not isinstance(m.get("abilities"), list) or any(a not in ("text", "streaming") for a in m["abilities"])):
-                raise ValueError()
-            seen.add(m["id"])
-        return rows
-    except (ValueError, TypeError):
-        raise Fault(message="Invalid plugin model catalogue.") from None
-
-
-def upstream(hermes, url, data):
-    if not hermes.configured():
-        raise Fault("unreachable", "Hermes dashboard is not configured.", 503)
-    with hermes.lock:
-        if hermes.opener is None:
-            try:
-                hermes._login()
-            except Exception:
-                raise Fault("unreachable", "Hermes dashboard login failed.", 503) from None
-        opener = hermes.opener
-    # Never forward the caller's grants, cookies, Authorization or identity hints.
-    payload = {k: v for k, v in data.items() if k != "abilities"}
-    payload["stream"] = True
-    req = Request(url + INFER_PATH, data=json.dumps(payload).encode(), method="POST",
-                  headers={"Content-Type": "application/json", "Accept": "text/event-stream"})
-    try:
-        return opener.open(req, timeout=120)
-    except HTTPError as e:
-        if e.code == 404:
-            e.close()
-            raise Fault(message=REQUIRED) from None
-        status = e.code
-        try:
-            payload = json.loads(e.read(MAX_BODY + 1))
-            code = (payload.get("error") or {}).get("code")
-        except (ValueError, TypeError, AttributeError):
-            code = None
-        finally:
-            e.close()
-        if status == 401:
-            # Do not replay an inference POST. A later request can renew the dashboard session.
-            with hermes.lock:
-                hermes.opener = None
-        code = code if code in CODES else {401: "signed_out", 429: "limit", 503: "unreachable"}.get(status, "provider_error")
-        raise Fault(code, "Hermes inference rejected the request.", status if status in (400, 401, 403, 413, 415, 429, 503) else 502) from None
-
-
-def relay(handler, response, model, lines=None):
-    """Preserve delta/done frames; normalize the plugin's nested error for the router."""
-    frame = []
-    total = size = 0
-    while True:
-        raw = next(lines) if lines is not None else response.readline(MAX_BODY + 1)
-        if raw is None:
-            handler.wfile.write(b": heartbeat\n\n")
-            handler.wfile.flush()
-            continue
-        if not raw:
-            raise Fault(message="Plugin ended without an effective-model done event.")
-        total += len(raw)
-        size += len(raw)
-        if size > MAX_BODY or total > 4 * 1024 * 1024:
-            raise Fault("limit", "Plugin stream exceeded its limit.")
-        frame.append(raw)
-        if raw.strip():
-            continue
-        frame_lines = b"".join(frame).decode("utf-8").splitlines()
-        kind = next((v[6:].strip() for v in frame_lines if v.startswith("event:")), "")
-        text = "\n".join(v[5:].lstrip() for v in frame_lines if v.startswith("data:"))
-        if text:
-            obj = json.loads(text)
-            if not isinstance(obj, dict) or obj.get("type", kind) != kind:
-                raise Fault(message="Malformed plugin event.")
-            if kind == "error":
-                code = (obj.get("error") or {}).get("code", obj.get("code"))
-                raise Fault(code if code in CODES else "provider_error")
-            if kind not in ("delta", "done"):
-                raise Fault(message="Unexpected plugin event.")
-            if kind == "delta" and not isinstance(obj.get("text"), str):
-                raise Fault(message="Invalid plugin text.")
-            if kind == "done" and (obj.get("ok") is not True or obj.get("model") != model or not isinstance(obj.get("usage"), dict)):
-                raise Fault(message="Plugin effective model or completion is invalid.")
-        handler.wfile.write(b"".join(frame))
-        handler.wfile.flush()
-        frame, size = [], 0
-        if text and kind == "done":
-            return
-
-
 STREAM_TIMEOUT_S = 120
 
 
@@ -244,7 +134,7 @@ def stream_lines(response):
                 if not line:
                     return
         except Exception:
-            offer(Fault("unreachable", "Plugin stream failed."))
+            offer(Fault("unreachable", "ChatGPT stream failed."))
     worker = threading.Thread(target=read, daemon=True)
     worker.start()
     deadline = time.monotonic() + STREAM_TIMEOUT_S
@@ -275,52 +165,61 @@ def stream_lines(response):
         response.close()
 
 
-def handle(handler, hermes, url):
+def handle_owned(handler, connection):
+    """Connection Router /2 ingress, translated directly to the app-owned Codex stream."""
+    from codex import Fault as CodexFault
     started = acquired = False
     try:
         admit(handler.headers)
         handler.connection.settimeout(10)
         data = body(handler)
-        try:
-            catalogue = models(hermes)
-        except Exception as e:
-            # Only typed, private dashboard errors; no exception text crosses this route.
-            if str(e) == REQUIRED:
-                raise Fault(message=REQUIRED) from None
-            raise Fault(getattr(e, "code", "provider_error"), "Plugin models are unavailable.") from None
-        validate(data, catalogue)
+        validate(data, connection.models())
         if not SLOTS.acquire(blocking=False):
             raise Fault("limit", "Inference capacity busy.", 429)
         acquired = True
-        with upstream(hermes, url, data) as response:
-            if response.headers.get_content_type() != "text/event-stream":
-                raise Fault(message="Plugin did not return SSE.")
+        payload = {"model": data["model"], "instructions": data.get("system") or "You are a helpful assistant.",
+                   "input": [{"role": m["role"], "content": m["content"]} for m in data["messages"]],
+                   "store": False, "stream": True}
+        with connection.open("POST", "/codex/responses", payload) as response:
             start(handler)
             started = True
             lines = stream_lines(response)
+            total = 0
             try:
-                relay(handler, response, data["model"], lines)
+                for raw in lines:
+                    if raw is None:
+                        handler.wfile.write(b": heartbeat\n\n")
+                        handler.wfile.flush()
+                        continue
+                    if not raw:
+                        raise Fault(message="ChatGPT stream ended without completion.")
+                    total += len(raw)
+                    if len(raw) > MAX_BODY or total > 4 * 1024 * 1024:
+                        raise Fault("limit", "ChatGPT stream exceeded its limit.")
+                    if not raw.startswith(b"data:"):
+                        continue
+                    event = json.loads(raw[5:])
+                    kind = event.get("type")
+                    if kind == "response.output_text.delta":
+                        emit(handler, {"type": "delta", "text": event["delta"]})
+                    elif kind == "response.completed":
+                        effective = event.get("response", {})
+                        if effective.get("model") != data["model"]:
+                            raise Fault(message="ChatGPT returned a different effective model.")
+                        emit(handler, {"type": "done", "ok": True, "model": data["model"], "usage": effective.get("usage") or {}})
+                        return
+                    elif kind in ("error", "response.failed", "response.incomplete"):
+                        raise Fault(message="ChatGPT did not complete the request.")
             finally:
                 lines.close()
-    except Fault as e:
-        if started:
-            emit(handler, e.payload())
-        else:
-            handler.json(e.status, e.payload())
+    except (Fault, CodexFault) as e:
+        event = {"type": "error", "code": e.code, "message": str(e)}
+        emit(handler, event) if started else handler.json(e.status, event)
     except (BrokenPipeError, ConnectionResetError):
         pass
-    except OSError:
-        e = Fault("unreachable", "Hermes connection failed.", 503)
-        if started:
-            emit(handler, e.payload())
-        else:
-            handler.json(e.status, e.payload())
-    except (ValueError, TypeError, AttributeError):
-        e = Fault(message="Malformed plugin stream.")
-        if started:
-            emit(handler, e.payload())
-        else:
-            handler.json(e.status, e.payload())
+    except (OSError, ValueError, TypeError, KeyError):
+        event = {"type": "error", "code": "provider_error", "message": "ChatGPT inference unavailable."}
+        emit(handler, event) if started else handler.json(502, event)
     finally:
         if acquired:
             SLOTS.release()
