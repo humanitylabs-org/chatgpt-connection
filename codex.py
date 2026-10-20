@@ -52,6 +52,8 @@ class Connection:
                 raise ValueError("HTTPS or test loopback required")
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self.mutex = threading.RLock()
+        self.login_mutex = threading.RLock()
+        self.unsaved = None
         self.login = None
         self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.data, 0o700)
@@ -119,7 +121,8 @@ class Connection:
             status = e.code
             try:
                 error = json.loads(e.read(65536)).get("error")
-                invalid = error == "invalid_grant" or isinstance(error, dict) and error.get("code") == "invalid_grant"
+                code = error.get("code") if isinstance(error, dict) else error
+                invalid = status in (400, 401) and str(code or "").lower() in {"invalid_grant", "refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"}
             except (ValueError, AttributeError):
                 invalid = False
             finally:
@@ -137,18 +140,29 @@ class Connection:
             raise Fault(message="ChatGPT did not return renewable credentials.")
         exp = claims(access).get("exp")
         expires = float(exp) if isinstance(exp, (int, float)) else time.time() + float(result.get("expires_in", 3600))
-        self.atomic("connection.json", {"status": "connected", "access_token": access, "refresh_token": refresh,
-                                       "expires_at": expires, "last_refresh": time.time()})
+        self.unsaved = {"status": "connected", "access_token": access, "refresh_token": refresh,
+                        "expires_at": expires, "last_refresh": time.time()}
+        self.persist_unsaved()
+
+    def persist_unsaved(self):
+        if self.unsaved is not None:
+            try:
+                self.atomic("connection.json", self.unsaved)
+            except OSError:
+                raise Fault("provider_error", "Cannot save ChatGPT login. Repair app-data storage and press Test before restarting.", 503) from None
+            self.unsaved = None
 
     def expire(self):
         # Erase the dead rotating chain; reconnect is the only recovery.
+        self.unsaved = None
         self.atomic("connection.json", {"status": "expired"})
 
     def access(self, rejected=None):
         with self.lock():
+            self.persist_unsaved()
             s = self.stored()
             if s.get("status") != "connected" or not s.get("access_token"):
-                code = "expired" if s.get("status") == "expired" else "signed_out"
+                code = "expired" if s.get("status") in ("expired", "refreshing") else "signed_out"
                 raise Fault(code, "Connect ChatGPT in the ChatGPT app.", 401)
             access = s["access_token"]
             if s.get("expires_at", 0) > time.time() + REFRESH_SKEW and (not rejected or access != rejected):
@@ -160,18 +174,23 @@ class Connection:
                 self.expire()
                 raise Fault("expired", "ChatGPT login expired. Press Connect again.", 401)
             try:
+                # Durable intent: a crash/ambiguous network result must not replay a single-use chain.
+                self.atomic("connection.json", {**s, "status": "refreshing"})
                 result = self.json_request(self.issuer + "/oauth/token", {
                     "grant_type": "refresh_token", "refresh_token": s["refresh_token"], "client_id": CLIENT_ID}, form=True)
                 self.save_tokens(result, s)
             except Fault as e:
                 if e.code == "expired":
                     self.expire()
+                elif e.code == "limit" and self.unsaved is None:
+                    # A definitive non-consuming HTTP rejection may be retried later.
+                    self.atomic("connection.json", s)
                 raise
             # Network-ambiguous refresh failures are never replayed automatically inside this call.
             return self.stored()["access_token"]
 
     def connect(self):
-        with self.lock():
+        with self.login_mutex:
             d = self.json_request(self.issuer + "/api/accounts/deviceauth/usercode", {"client_id": CLIENT_ID})
             code, device = d.get("user_code", ""), d.get("device_auth_id", "")
             import re
@@ -185,7 +204,7 @@ class Connection:
 
     def poll(self, login_id):
         import hmac
-        with self.lock():
+        with self.login_mutex:
             s = self.login
             if not s or not hmac.compare_digest(str(login_id).encode(), s["id"].encode()) or time.monotonic() >= s["until"]:
                 raise Fault("expired", "This sign-in expired. Press Connect again.", 409)
@@ -207,16 +226,18 @@ class Connection:
             tokens = self.json_request(self.issuer + "/oauth/token", {
                 "grant_type": "authorization_code", "code": d["authorization_code"], "code_verifier": d["code_verifier"],
                 "redirect_uri": self.issuer + "/deviceauth/callback", "client_id": CLIENT_ID}, form=True)
-            self.save_tokens(tokens)
+            with self.lock():
+                self.save_tokens(tokens)
             return {"ok": True, "status": "approved", "message": "Connected. Hermes keeps its current default model."}
 
     def cancel(self):
-        with self.lock():
+        with self.login_mutex:
             self.login = None
 
     def disconnect(self):
-        with self.lock():
+        with self.login_mutex, self.lock():
             self.login = None
+            self.unsaved = None
             (self.data / "connection.json").unlink(missing_ok=True)
             fd = os.open(self.data, os.O_DIRECTORY)
             try:
@@ -248,14 +269,12 @@ class Connection:
                 if status == 401 and attempt == 0:
                     access = self.access(rejected=access)
                     continue
-                if status == 401:
-                    with self.lock():
-                        if self.stored().get("access_token") == access:
-                            self.expire()
                 raise Fault("limit" if status == 429 else "expired" if status == 401 else "provider_error",
                             "ChatGPT rejected the request.", status if status in (400, 401, 403, 429) else 502) from None
             except OSError:
                 raise Fault("unreachable", "ChatGPT is unavailable.", 503) from None
+
+        raise Fault(message="ChatGPT request did not complete.")
 
     def get(self, path):
         with self.open("GET", path) as r:
@@ -279,7 +298,10 @@ class Connection:
         for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
             w = (d.get("rate_limit") or {}).get(key) or {}
             if isinstance(w.get("used_percent"), (int, float)):
-                label = {18000: "Session", 604800: "Weekly"}.get(w.get("limit_window_seconds"), label)
+                if w.get("limit_window_seconds") == 18000:
+                    label = "Session"
+                elif w.get("limit_window_seconds") == 604800:
+                    label = "Weekly"
                 used = max(0, min(100, w["used_percent"]))
                 reset = w.get("reset_at")
                 limits.append({"id": key, "label": label, "usedPercent": used, "remainingPercent": 100 - used,

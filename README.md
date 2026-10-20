@@ -30,8 +30,12 @@ container. App Manager backup captures this bind mount.
 - Refresh 120 seconds before expiry, on demand. Process mutex + filesystem flock
   serialize renewal across threads/processes. Re-read while locked; persist the
   rotated chain using same-directory replace, file fsync and directory fsync.
-- `invalid_grant` erases the unusable chain, marks `expired`, requires reconnect.
-  No automatic retry of a timed-out token exchange. A provider-accepted refresh
+- `invalid_grant` and explicit expired/reused/invalidated refresh-chain errors erase
+  the unusable chain, mark `expired`, require reconnect.
+  No automatic replay of a timed-out token exchange: a durable refreshing marker
+  becomes reconnect-required after an ambiguous result or crash. Just-received
+  rotated credentials are retained in memory for retrying a failed disk write
+  before any further refresh. A process crash during a provider-accepted refresh
   followed by a network/disk failure can still require reconnect; single-use
   refresh tokens cannot be made transactionally atomic with a remote OAuth server.
 - No live Hermes auth/config files are mounted or read by this app.
@@ -56,12 +60,14 @@ Do not use `hermes auth add openai-codex`: that creates a second OAuth owner.
 
 After approval the app uses the stock dashboard APIs to:
 
-1. Refuse existing non-app Codex pool entries instead of redirecting another login.
+1. Refuse existing non-app Codex pool entries and a legacy singleton login
+   (via the stock read-only OAuth status endpoint) instead of redirecting another login.
 2. Advertise the `wizard-chatgpt` named custom endpoint, `api_mode: codex_responses`,
    `make_default: false`, with just the local key (same endpoint API as Tinfoil).
 3. Set `HERMES_CODEX_BASE_URL` and provision the native `openai-codex` API-key pool
    entry, reading back the endpoint and pool. Re-registration replaces only its
-   own labelled row. The app's current default model is **never selected for you**.
+   own labelled row when its saved key fingerprint/base changes; otherwise it is
+   idempotent. Registration and disconnect are serialized. The app's current default model is **never selected for you**.
 
 To retain all native features, explicitly select **OpenAI Codex** in Hermes, not
 the advertised **ChatGPT app** custom fallback. A running agent may need a fresh
@@ -85,7 +91,11 @@ covers plain text, terminal tool round-trip, incremental streaming and quota;
 
 Disconnect leaves the Codex base override fail-closed (box URL), even after pool
 removal, so a stale local bearer cannot be redirected to ChatGPT by removing the
-override. Do not delete that override while a residual app bearer remains.
+override. Do not delete that override while a residual app bearer remains. Before ever
+returning to a different native Hermes OAuth login, stop its callers, verify both
+the app pool row and custom endpoint/key are removed, then remove this app
+override deliberately. Never add a real Hermes OAuth credential while it remains.
+A failed dashboard cleanup reports `unregister_failed`, not a successful removal.
 
 ## Box-only gateway and Connection Router
 

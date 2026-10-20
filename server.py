@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hmac
 import http.cookiejar
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,7 @@ FRAME_ANCESTORS = " ".join(["'self'"] + [o for o in (x.strip().rstrip("/") for x
 OWNER = None
 GATEWAY_SLOTS = threading.BoundedSemaphore(8)
 INIT_LOCK = threading.Lock()
+REGISTRATION_LOCK = threading.RLock()
 
 
 def owner():
@@ -82,6 +84,7 @@ class Hermes:
                     if cls.opener is None:
                         cls._login()
                     op = cls.opener
+                    assert op is not None
                 req = Request(HERMES_URL + path, data=None if body is None else json.dumps(body).encode(), method=method, headers={"Content-Type": "application/json"})
                 with op.open(req, timeout=timeout) as r:
                     return json.loads(r.read(4 * 1024 * 1024) or b"{}")
@@ -103,6 +106,13 @@ def pool_rows(payload):
 
 
 def register(models):
+    with REGISTRATION_LOCK:
+        if owner().stored().get("status") != "connected":
+            return "not_registered"
+        return _register(models)
+
+
+def _register(models):
     """Register native Codex routing without changing any model selection.
 
     Stock dashboard custom-endpoints are *always* custom runtimes, so also provision the
@@ -116,6 +126,13 @@ def register(models):
         rows = pool_rows(Hermes.call("GET", "/api/credentials/pool"))
         if any(r.get("label") != ENDPOINT_ID for r in rows):
             return "conflict: remove existing Hermes Codex credentials before app-owned routing"
+        if not rows:
+            oauth = Hermes.call("GET", "/api/providers/oauth").get("providers", [])
+            status = next((p.get("status", {}) for p in oauth if p.get("id") == "openai-codex"), None)
+            if status is None or status.get("error"):
+                return "unavailable"
+            if status.get("logged_in") or status.get("token_preview"):
+                return "conflict: remove existing Hermes Codex credentials before app-owned routing"
         # A named custom endpoint is discoverable and provides an explicit fallback.
         ids = [m["id"] for m in models]
         Hermes.call("POST", "/api/providers/custom-endpoints", {"id": ENDPOINT_ID, "name": "ChatGPT app", "base_url": AGENT_BASE,
@@ -124,9 +141,16 @@ def register(models):
         if not any(r.get("id") == ENDPOINT_ID and r.get("base_url", "").rstrip("/") == AGENT_BASE.rstrip("/") for r in listed):
             return "unavailable"
         Hermes.call("PUT", "/api/env", {"key": "HERMES_CODEX_BASE_URL", "value": AGENT_BASE})
-        for row in reversed(rows):
-            Hermes.call("DELETE", f"/api/credentials/pool/openai-codex/{row['index']}")
-        Hermes.call("POST", "/api/credentials/pool", {"provider": "openai-codex", "api_key": key, "label": ENDPOINT_ID})
+        import hashlib
+        fingerprint = hashlib.sha256(key.encode()).hexdigest()
+        try:
+            previous = json.loads((owner().data / "registration.json").read_text())
+        except (OSError, ValueError):
+            previous = {}
+        if len(rows) != 1 or previous.get("key_sha256") != fingerprint or previous.get("base_url") != AGENT_BASE:
+            for row in reversed(rows):
+                Hermes.call("DELETE", f"/api/credentials/pool/openai-codex/{row['index']}")
+            Hermes.call("POST", "/api/credentials/pool", {"provider": "openai-codex", "api_key": key, "label": ENDPOINT_ID})
         check = pool_rows(Hermes.call("GET", "/api/credentials/pool"))
         return "registered" if any(r.get("label") == ENDPOINT_ID and not r.get("has_refresh") for r in check) else "unavailable"
     except HermesError:
@@ -141,41 +165,66 @@ def registration():
 
 
 def reconcile():
-    try:
-        result = register(owner().models())
-        with owner().lock():
-            owner().atomic("registration.json", {"status": result})
-        return result
-    except codex.Fault:
-        return "unavailable"
+    import hashlib
+    with REGISTRATION_LOCK:
+        try:
+            result = register(owner().models())
+            try:
+                with owner().lock():
+                    owner().atomic("registration.json", {"status": result, **({"base_url": AGENT_BASE, "key_sha256": hashlib.sha256(owner().gateway_token().encode()).hexdigest()} if result == "registered" else {})})
+            except OSError:
+                pass  # Login is independent of advisory dashboard-registration status.
+            return result
+        except codex.Fault:
+            return "unavailable"
 
 
 def unregister():
+    with REGISTRATION_LOCK:
+        return _unregister()
+
+
+def _unregister():
+    failed = False
     # Only remove the app-labelled pool row. Never log out a different Codex login.
     try:
         rows = pool_rows(Hermes.call("GET", "/api/credentials/pool"))
         for i in reversed(range(len(rows))):
             if rows[i].get("label") == ENDPOINT_ID:
-                Hermes.call("DELETE", f"/api/credentials/pool/openai-codex/{i + 1}")
-        Hermes.call("DELETE", "/api/providers/custom-endpoints/" + ENDPOINT_ID)
+                Hermes.call("DELETE", f"/api/credentials/pool/openai-codex/{rows[i]['index']}")
+        endpoints = Hermes.call("GET", "/api/providers/custom-endpoints").get("endpoints", [])
+        if any(r.get("id") == ENDPOINT_ID for r in endpoints):
+            Hermes.call("DELETE", "/api/providers/custom-endpoints/" + ENDPOINT_ID)
         # Keep URL override fail-closed: removing it could send a residual local bearer to chatgpt.com.
+        if any(r.get("label") == ENDPOINT_ID for r in pool_rows(Hermes.call("GET", "/api/credentials/pool"))):
+            failed = True
+        if any(r.get("id") == ENDPOINT_ID for r in Hermes.call("GET", "/api/providers/custom-endpoints").get("endpoints", [])):
+            failed = True
     except HermesError:
-        pass
+        failed = Hermes.configured()
     with owner().lock():
-        owner().atomic("registration.json", {"status": "not_registered"})
+        owner().atomic("registration.json", {"status": "unregister_failed" if failed else "not_registered"})
 
 
 def connection():
-    s = owner().stored()
-    status = s.get("status", "not_connected")
+    problem = None
+    try:
+        s = owner().stored()
+    except codex.Fault as e:
+        s, problem = {"status": "error"}, {"code": e.code, "message": str(e)}
+    status = "expired" if s.get("status") == "refreshing" else s.get("status", "not_connected")
     out = {"contract": CONTRACT, "provider": "chatgpt", "name": "ChatGPT", "status": status,
            "plan": None, "account": None, "usage": None, "error": None, "models": [], "chatIntegration": registration()}
+    if problem:
+        out["error"] = problem
+        return out
     if status == "connected":
         try:
             out["models"] = owner().models()
             out["plan"], out["usage"] = owner().usage()
         except codex.Fault as e:
-            out["status"] = owner().stored().get("status", status)
+            current = owner().stored().get("status", status)
+            out["status"] = ("error" if owner().unsaved is not None else "expired") if current == "refreshing" else current
             out["error"] = {"code": e.code, "message": str(e)}
     else:
         out["error"] = {"code": "expired" if status == "expired" else "signed_out", "message": "Open ChatGPT and press Connect."}
@@ -183,9 +232,14 @@ def connection():
 
 
 def account_row():
-    s = owner().stored()
-    return {"id": "chatgpt-subscription", "name": "ChatGPT subscription", "status": s.get("status", "not_connected"),
-            "detail": "This app stores and renews your ChatGPT login. Hermes uses a box-only connection.",
+    try:
+        s = owner().stored()
+    except codex.Fault as e:
+        return {"id": "chatgpt-subscription", "name": "ChatGPT subscription", "status": "error", "problem": str(e)}
+    if owner().unsaved is not None:
+        s = {"status": "connected"}
+    return {"id": "chatgpt-subscription", "name": "ChatGPT subscription", "status": "expired" if s.get("status") == "refreshing" else s.get("status", "not_connected"),
+            "detail": "Login not safely saved — repair app-data storage and press Test before restarting." if owner().unsaved is not None else "This app stores and renews your ChatGPT login. Hermes uses a box-only connection.",
             "account": "", "signing_in": bool(owner().login), "integration": registration()}
 
 
@@ -202,11 +256,11 @@ def box_only(headers):
                    or k.lower().startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in headers)
 
 
-class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
     server_version = "wizard-chatgpt"
     sys_version = ""
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):
         pass  # no query strings, headers, request bodies or upstream exception text in logs
 
     def send(self, code, body, kind="application/json"):
@@ -262,6 +316,7 @@ class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).Bas
             self.connection.settimeout(120)
             body = inference.body(self, 16 * 1024 * 1024) if self.command == "POST" else None
             if path == "/v1/responses":
+                assert body is not None
                 body.update(store=False, stream=True, instructions=body.get("instructions") or "You are a helpful assistant.")
                 for k in ("max_output_tokens", "max_tokens", "temperature", "top_p", "frequency_penalty", "presence_penalty", "truncation"):
                     body.pop(k, None)
@@ -270,8 +325,13 @@ class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).Bas
                 if path == "/v1/models":
                     data = json.loads(r.read(codex.MAX_JSON))
                     return self.json(200, {"object": "list", "data": [{"id": m["slug"], "object": "model", "owned_by": "chatgpt"} for m in data.get("models", []) if m.get("slug")]})
+                if path != "/v1/responses":
+                    raw = r.read(codex.MAX_JSON + 1)
+                    if len(raw) > codex.MAX_JSON:
+                        raise codex.Fault(message="ChatGPT response exceeded its limit.")
+                    return self.send(r.status, raw, "application/json")
                 self.send_response(r.status)
-                self.send_header("Content-Type", r.headers.get("Content-Type", "application/json"))
+                self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "close")
                 self.send_header("X-Accel-Buffering", "no")
@@ -291,12 +351,15 @@ class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).Bas
                             break
                         total += len(line)
                         if len(line) > 4 * 1024 * 1024 or total > 64 * 1024 * 1024 or time.monotonic() > deadline:
-                            break
+                            raise codex.Fault("limit", "ChatGPT stream exceeded its limit.", 429)
                         self.wfile.write(line)
                         self.wfile.flush()
         except (codex.Fault, inference.Fault) as e:
             if not started:
                 self.json(e.status, {"error": {"code": e.code, "message": str(e)}})
+            else:
+                self.wfile.write(("event: error\ndata: " + json.dumps({"type": "error", "code": e.code, "message": str(e)}) + "\n\n").encode())
+                self.wfile.flush()
         except (OSError, ValueError):
             if not started:
                 self.json(502, {"error": "ChatGPT gateway unavailable."})
@@ -361,17 +424,15 @@ class Handler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).Bas
                 plan, usage = owner().usage()
                 return self.json(200, {"ok": True, "message": "ChatGPT connection verified.", "plan": plan, "usage": usage, "models": models, "registration": reconcile()})
             if path == "/api/chatgpt/logout":
-                owner().disconnect()
-                unregister()
-                return self.json(200, {"ok": True, "message": "Disconnected. In-flight replies may finish; new requests are disabled."})
+                with REGISTRATION_LOCK:
+                    owner().disconnect()
+                    unregister()
+                return self.json(200, {"ok": True, "registration": registration(), "message": "Disconnected locally; Hermes cleanup needs retry." if registration() == "unregister_failed" else "Disconnected. In-flight replies may finish; new requests are disabled."})
             self.json(404, {"ok": False, "message": "not found"})
         except (codex.Fault, inference.Fault) as e:
             self.json(e.status, {"ok": False, "status": e.code, "message": str(e)})
         except (OSError, ValueError, TypeError):
             self.json(503, {"ok": False, "message": "ChatGPT connection unavailable."})
-
-
-from http.server import ThreadingHTTPServer
 
 
 class Server(ThreadingHTTPServer):

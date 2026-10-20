@@ -41,7 +41,7 @@ def serving(s):
 
 
 class Fake(BaseHTTPRequestHandler):
-    state = None
+    state = {}
     def log_message(self, *args):
         pass
 
@@ -56,6 +56,8 @@ class Fake(BaseHTTPRequestHandler):
     def do_GET(self):
         s = self.state
         s["requests"].append((self.command, self.path, dict(self.headers), None))
+        if s["mode"] == "unauthorized":
+            return self.reply(401, {"error": "temporary backend rejection"})
         if self.path.startswith("/backend-api/codex/models"):
             return self.reply(200, {"models": [{"slug": "gpt-5.6-sol", "display_name": "GPT 5.6"}]})
         if self.path == "/backend-api/wham/usage":
@@ -85,7 +87,7 @@ class Fake(BaseHTTPRequestHandler):
             with s["lock"]:
                 s["refreshes"] += 1
                 if s["invalid"] or body["refresh_token"] != [s["refresh"]]:
-                    return self.reply(400, {"error": "invalid_grant", "detail": jwt()})
+                    return self.reply(401 if s.get("invalid_code") else 400, {"error": {"code": s["invalid_code"]} if s.get("invalid_code") else "invalid_grant", "detail": jwt()})
                 s["refresh"] = "FAKE-ROTATED-" + str(s["refreshes"])
             time.sleep(.04)
             return self.reply(200, {"access_token": jwt(), "refresh_token": s["refresh"]})
@@ -223,6 +225,73 @@ class OAuthTests(AppCase):
         self.assertEqual(self.state["refreshes"], 1)
         self.assertEqual(self.conn.stored(), {"status": "expired"})
 
+    def test_backend_401_refresh_once_does_not_destroy_valid_chain(self):
+        self.seed(); self.state["mode"] = "unauthorized"
+        with self.assertRaises(codex.Fault) as e: self.conn.models()
+        self.assertEqual(e.exception.status, 401)
+        self.assertEqual(self.state["refreshes"], 1)
+        self.assertEqual(self.conn.stored()["status"], "connected")
+        self.assertEqual(self.conn.stored()["refresh_token"], "FAKE-ROTATED-1")
+        self.state["mode"] = "ok"
+        self.assertEqual(self.conn.models()[0]["id"], "gpt-5.6-sol")
+
+    def test_refresh_chain_failure_codes_expire_once(self):
+        for code in ("refresh_token_expired", "refresh_token_reused", "REFRESH_TOKEN_INVALIDATED"):
+            self.state["invalid"] = True; self.state["invalid_code"] = code
+            self.seed(time.time() - 1)
+            count = self.state["refreshes"]
+            for _ in range(2):
+                with self.assertRaises(codex.Fault) as e: self.conn.access()
+                self.assertEqual(e.exception.code, "expired")
+            self.assertEqual(self.state["refreshes"], count + 1)
+            self.assertEqual(self.conn.stored(), {"status": "expired"})
+
+    def test_rotated_tokens_survive_transient_disk_failure_without_second_refresh(self):
+        self.seed(time.time() - 1)
+        atomic = self.conn.atomic
+        def disk(name, obj):
+            if name == "connection.json" and obj.get("status") == "connected":
+                raise OSError("disk full, secret text must not escape")
+            atomic(name, obj)
+        with patch.object(self.conn, "atomic", side_effect=disk):
+            with self.assertRaises(codex.Fault) as e: self.conn.access()
+            self.assertNotIn("secret text", str(e.exception))
+        self.assertEqual(self.conn.stored()["status"], "refreshing")
+        other = codex.Connection(self.conn.data, self.upstream, self.upstream + "/backend-api")
+        with self.assertRaises(codex.Fault): other.access()
+        self.assertEqual(self.state["refreshes"], 1)
+        self.assertTrue(self.conn.access())
+        self.assertEqual(self.conn.stored()["refresh_token"], "FAKE-ROTATED-1")
+        self.assertEqual(self.state["refreshes"], 1)
+
+    def test_ambiguous_refresh_does_not_replay_after_restart(self):
+        self.seed(time.time() - 1)
+        with patch.object(self.conn, "json_request", side_effect=codex.Fault("unreachable", "Unavailable", 503)) as req:
+            with self.assertRaises(codex.Fault): self.conn.access()
+            self.assertEqual(req.call_count, 1)
+        other = codex.Connection(self.conn.data, self.upstream, self.upstream + "/backend-api")
+        with self.assertRaises(codex.Fault): other.access()
+        self.assertEqual(self.state["refreshes"], 0)
+        self.assertEqual(server.account_row()["status"], "expired")
+
+    def test_pending_login_network_does_not_block_existing_access(self):
+        self.seed()
+        request = self.conn.json_request
+        entered, release = threading.Event(), threading.Event()
+        def waiting(url, *args, **kw):
+            if url.endswith("/usercode"):
+                entered.set(); release.wait(3)
+            return request(url, *args, **kw)
+        with patch.object(self.conn, "json_request", side_effect=waiting):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                login = pool.submit(self.conn.connect)
+                self.assertTrue(entered.wait(1))
+                try:
+                    self.assertTrue(pool.submit(self.conn.access).result(timeout=.4))
+                finally:
+                    release.set()
+                self.assertTrue(login.result()["ok"])
+
     def test_cancel_wrong_login_and_access_only_no_refresh(self):
         d = self.conn.connect()
         with self.assertRaises(codex.Fault): self.conn.poll("wrong")
@@ -302,6 +371,107 @@ class GatewayTests(AppCase):
         data = self.state["requests"][-1][3]
         self.assertTrue(data["stream"]); self.assertFalse(data["store"])
         self.assertNotIn("max_tokens", data); self.assertNotIn("temperature", data)
+
+
+class RegistrationTests(AppCase):
+    def dashboard(self):
+        self.rows = []
+        self.endpoints = []
+        self.native_adds = 0
+        self.deletes = []
+        self.dashboard_writes = []
+        def call(method, path, body=None, **kw):
+            if method == "GET" and path == "/api/providers/oauth":
+                return {"providers": [{"id": "openai-codex", "status": {"logged_in": False, "token_preview": None}}]}
+            if method == "GET" and path == "/api/credentials/pool":
+                return {"providers": [{"provider": "openai-codex", "entries": list(self.rows)}]}
+            if method == "GET" and path == "/api/providers/custom-endpoints":
+                return {"endpoints": self.endpoints}
+            self.dashboard_writes.append((method, path, body))
+            if method == "POST" and path == "/api/providers/custom-endpoints":
+                self.assertFalse(body["make_default"])
+                self.assertEqual(body["api_key"], self.conn.gateway_token())
+                self.endpoints = [{"id": body["id"], "base_url": body["base_url"]}]
+            if method == "POST" and path == "/api/credentials/pool":
+                self.native_adds += 1
+                self.assertEqual(body["api_key"], self.conn.gateway_token())
+                self.rows.append({"index": 7, "label": body["label"], "has_refresh": False})
+            if method == "DELETE" and path.startswith("/api/credentials/pool/"):
+                index = int(path.rsplit("/", 1)[1]); self.deletes.append(index)
+                self.rows[:] = [r for r in self.rows if r["index"] != index]
+            if method == "DELETE" and path.startswith("/api/providers/custom-endpoints/"):
+                self.endpoints = []
+            return {"ok": True}
+        return call
+
+    def test_reconcile_concurrent_single_registration_and_idempotent_key(self):
+        self.seed()
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=self.dashboard()):
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda _: server.reconcile(), range(16)))
+            self.assertEqual(results, ["registered"] * 16)
+            self.assertEqual(len(self.rows), 1)
+            self.assertEqual(self.native_adds, 1)
+            self.assertEqual(self.deletes, [])
+
+    def test_legacy_singleton_conflict_before_any_dashboard_write(self):
+        self.seed()
+        call = self.dashboard()
+        def legacy(method, path, body=None, **kw):
+            if path == "/api/providers/oauth":
+                return {"providers": [{"id": "openai-codex", "status": {"logged_in": True, "token_preview": "last-five"}}]}
+            return call(method, path, body, **kw)
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=legacy):
+            self.assertTrue(server.register([{"id": "gpt-5.6-sol"}]).startswith("conflict"))
+            self.assertEqual(self.dashboard_writes, [])
+
+    def test_conflict_and_unregister_target_index_preserve_other_login(self):
+        self.seed()
+        call = self.dashboard()
+        self.rows = [{"index": 7, "label": server.ENDPOINT_ID}, {"index": 2, "label": "owner-other-account"}]
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=call):
+            self.assertTrue(server.register([{"id": "gpt-5.6-sol"}]).startswith("conflict"))
+            self.assertEqual(self.dashboard_writes, [])
+            server.unregister()
+            self.assertEqual(self.deletes, [7])
+            self.assertEqual(self.rows, [{"index": 2, "label": "owner-other-account"}])
+
+    def test_failed_key_replacement_does_not_cache_success_fingerprint(self):
+        self.seed()
+        call = self.dashboard()
+        self.rows = [{"index": 7, "label": server.ENDPOINT_ID, "has_refresh": False}]
+        self.conn.atomic("registration.json", {"status": "registered", "key_sha256": "old-key", "base_url": server.AGENT_BASE})
+        fail = [True]
+        def transient(method, path, body=None, **kw):
+            if method == "DELETE" and path.startswith("/api/credentials/pool/") and fail[0]:
+                fail[0] = False
+                raise server.HermesError("transient")
+            return call(method, path, body, **kw)
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=transient):
+            self.assertEqual(server.reconcile(), "unavailable")
+            self.assertNotIn("key_sha256", json.loads((self.conn.data / "registration.json").read_text()))
+            self.assertEqual(server.reconcile(), "registered")
+            self.assertEqual(self.native_adds, 1)
+
+    def test_absent_endpoint_cleanup_is_idempotent(self):
+        self.seed()
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=self.dashboard()):
+            server.unregister(); server.unregister()
+        self.assertEqual(server.registration(), "not_registered")
+        self.assertFalse(any(method == "DELETE" and path.startswith("/api/providers/custom-endpoints/") for method, path, _ in self.dashboard_writes))
+
+    def test_failed_cleanup_and_registration_status_disk_error_are_honest(self):
+        self.seed()
+        with patch.object(server, "HERMES_PASSWORD", "fake-dash"), patch.object(server.Hermes, "call", side_effect=server.HermesError("unavailable")):
+            server.unregister()
+            self.assertEqual(server.registration(), "unregister_failed")
+        atomic = self.conn.atomic
+        def failing(name, obj):
+            if name == "registration.json": raise OSError("disk full")
+            return atomic(name, obj)
+        with patch.object(server, "register", return_value="registered"), patch.object(self.conn, "atomic", side_effect=failing):
+            self.assertEqual(server.reconcile(), "registered")
+        self.assertEqual(self.conn.stored()["status"], "connected")
 
 
 if __name__ == "__main__":
