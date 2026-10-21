@@ -106,7 +106,7 @@ class Connection:
 
     def json_request(self, url, body=None, *, form=False):
         data = None if body is None else (urlencode(body).encode() if form else json.dumps(body).encode())
-        req = Request(url, data=data, headers={"Accept": "application/json", "User-Agent": "wizard-chatgpt/0.3.0-dev",
+        req = Request(url, data=data, headers={"Accept": "application/json", "User-Agent": "wizard-chatgpt/0.3.0",
                       **({"Content-Type": "application/x-www-form-urlencoded" if form else "application/json"} if data else {})})
         try:
             with self.opener.open(req, timeout=20) as res:

@@ -1,10 +1,12 @@
-# ChatGPT connection — 0.3.0-dev
+# ChatGPT connection — 0.3.0
 
 This app owns the Codex device-code login and its rotating renewal chain. Stock
 Hermes and Connection Router clients use the app; they never receive a ChatGPT
-access or refresh token. This is a source-only development branch, **not a released
-image**. The compose engine still pins the previous 0.2.1 image. Do not install
-that compose expecting these changes until an authorized image build/pin update.
+access or refresh token. Version 0.3.0 uses `runtime.package: source`: App Manager
+mounts the exact installed repository commit read-only at `/app` and runs its
+stdlib Python engine on a digest-pinned official `python:3.12-alpine` image.
+The previous custom engine image is no longer used; no image build or publication
+is required. Install with an App Manager that supports source packages.
 
 ## Ownership and storage
 
@@ -189,17 +191,23 @@ MCP `connection_status` is read-only, reporting the same safe app-owned status.
 ## Verification
 
 ```sh
+python3 test-package.py
 python3 test-chatgpt.py
 python3 test-inference.py -v
 python3 mcp/inline.py --check
 ```
 
-Tests use only fake loopback OAuth/Codex servers. They cover device exchange,
+The package test boots the real source engine against fresh empty scratch app-data,
+checks health/version and the disconnected page/status, and asserts the source and
+data mount contract. It is a process-level smoke test, not Docker/installed-box QA.
+Other tests use only fake loopback OAuth/Codex servers. They cover device exchange,
 rotation and process-safe single-flight, invalid_grant, migration, gateway browser
 and auth refusals, streaming, secret suppression and Router contract behavior.
 `qa/` contains the Appearance/controls hosted proxy (not real-shell/physical-device
-acceptance). `test-container.sh` is an optional builder-only image smoke test,
-not run on this control-plane task. No images or app index entries are published.
+acceptance). `test-container.sh` optionally boots the same pinned official Python
+image with the repo mounted read-only on a builder; it does not build a custom
+image and was not run on this control-plane task. No images or app index entries
+are published.
 
 ### Remaining owner gate: real device login/renewal
 

@@ -1,4 +1,4 @@
-# ChatGPT — 0.3.0-dev (source only)
+# ChatGPT — 0.3.0
 
 Connect your ChatGPT Plus or Pro subscription in this app. The app, not Hermes,
 stores and renews the login in its private app-data bind mount.
@@ -23,6 +23,6 @@ Keep the app on a trusted private network; the owner page can have a password.
 The model gateway requires its local bearer and refuses browser/forwarded headers.
 Other apps use Connection Router. Usage/status come from this app's own login.
 
-This branch has not published an image. The compose engine still pins the old
-immutable release pending an authorized build and pin update. See README for
-verification, safe migration and the remaining owner-approved real login gate.
+This is a source package: App Manager runs the exact installed repository revision
+read-only on a digest-pinned official Python image. No custom engine image build is
+needed. See README for verification, safe migration and owner acceptance gates.

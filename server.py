@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import inference
 import codex
 
-VERSION = "0.3.0-dev"
+VERSION = "0.3.0"
 CONTRACT = "wizard.ai-connection/2"
 APP = Path(__file__).resolve().parent
 BIND = os.environ.get("WIZARD_CHATGPT_BIND", "0.0.0.0")

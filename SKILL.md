@@ -34,8 +34,9 @@ Never ask for passwords, device codes or tokens in chat.
 - Migration: **stop old app and callers first**, copy the entire app-data folder
   with its modes/owner, start only the new copy, Test and re-register. Rotation
   makes old backups stale. Never run two boxes from one rotating token chain.
-- `0.3.0-dev` is source-only. The compose engine still pins the old release until
-  an authorized image build/pin update. Do not claim this branch is installed.
+- `0.3.0` uses `runtime.package: source`: App Manager mounts the exact installed
+  repository revision read-only on a digest-pinned official Python image. No
+  custom image build is required. Do not claim a branch is installed without readback.
 
 See README for routing config, storage/backups, test commands, migration and the
 remaining owner-approved real device-login/renewal acceptance steps.

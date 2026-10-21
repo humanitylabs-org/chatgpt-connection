@@ -10,6 +10,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python3 test-package.py
       - run: python3 test-chatgpt.py
       - run: python3 test-inference.py -v
       - run: python3 mcp/inline.py --check

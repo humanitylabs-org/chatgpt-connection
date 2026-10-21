@@ -10,8 +10,8 @@
     "network"
   ],
   "description": "Connect your ChatGPT Plus or Pro subscription to your Wizard server once. This app owns and renews the ChatGPT login in its app-data folder. Stock Hermes receives only a box-local bearer and calls this app for models and quota. Connecting leaves the default Hermes model unchanged.",
-  "tipi_version": 2,
-  "version": "0.3.0-dev",
+  "tipi_version": 3,
+  "version": "0.3.0",
   "source": "https://github.com/humanitylabs-org/chatgpt-connection",
   "exposable": false,
   "supported_architectures": [

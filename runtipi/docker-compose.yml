@@ -12,7 +12,7 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APP: wizard-chatgpt
-      APP_VERSION: 0.3.0-dev
+      APP_VERSION: 0.3.0
       FRONT_PORT: "8801"
       UPSTREAM_HOST: wizard-chatgpt-engine
       UPSTREAM_PORT: "8801"
@@ -240,7 +240,15 @@ services:
       is_main: true
       internal_port: 8801
   wizard-chatgpt-engine:
-    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.1@sha256:a7190ca9f3be08ca70e085d9042aadb43cd0a53d3d3a9f0efa0f236427c7080a
+    # Source package: execute the exact installed repo revision, not the old custom image.
+    image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    working_dir: /app
+    command: ["python3", "/app/server.py"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8801/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -255,12 +263,15 @@ services:
       WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
       WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
       APP_DATA_DIR: /data
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
       WIZARD_CHATGPT_AGENT_URL: ${WIZARD_CHATGPT_AGENT_URL:-http://wizard-chatgpt:8801/v1}
       # Dashboard access is used ONLY to register a box-local bearer, never for OAuth or inference.
       WIZARD_CHATGPT_HERMES_URL: ${WIZARD_CHATGPT_HERMES_URL:-http://hermes-agent:9119}
       WIZARD_CHATGPT_HERMES_USER: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-hermes}
       WIZARD_CHATGPT_HERMES_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
     volumes:
+      - ${APP_SOURCE_DIR}:/app:ro
       - ${APP_DATA_DIR}/data:/data
     x-runtipi:
       # Joins the Runtipi main network so it can reach the Hermes Agent app by name.
