@@ -21,7 +21,8 @@ class PackageTests(unittest.TestCase):
         manifest = (ROOT / "wizard.md").read_text().split("---", 2)[1]
         compose = (ROOT / "runtipi/docker-compose.yml").read_text()
         self.assertIn("  package: source", manifest)
-        self.assertEqual(compose.count("image: " + BASE), 2)
+        self.assertEqual(compose.count("image: " + BASE), 3)  # proxy, engine, data-init
+        self.assertIn("condition: service_completed_successfully", compose)
         self.assertNotIn("ghcr.io/", compose)
         self.assertNotIn("build:", compose)
         self.assertIn("${APP_SOURCE_DIR}:/app:ro", compose)

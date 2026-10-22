@@ -239,11 +239,24 @@ services:
     x-runtipi:
       is_main: true
       internal_port: 8801
+  wizard-chatgpt-data-init:
+    # Runtipi creates ${APP_DATA_DIR}/data as root; the engine runs as 1000 and keeps its login at 0700.
+    image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    user: "0:0"
+    restart: "no"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    command: ["sh", "-c", "chown 1000:1000 /data && chmod 700 /data"]
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
   wizard-chatgpt-engine:
     # Source package: execute the exact installed repo revision, not the old custom image.
     image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
     working_dir: /app
     command: ["python3", "/app/server.py"]
+    depends_on:
+      wizard-chatgpt-data-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8801/health', timeout=3).read()"]
       interval: 30s
