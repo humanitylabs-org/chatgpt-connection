@@ -1,113 +1,226 @@
-# ChatGPT
+# ChatGPT connection — 0.3.0
 
-## Source and fork
+This app owns the Codex device-code login and its rotating renewal chain. Stock
+Hermes and Connection Router clients use the app; they never receive a ChatGPT
+access or refresh token. Version 0.3.0 uses `runtime.package: source`: App Manager
+mounts the exact installed repository commit read-only at `/app` and runs its
+stdlib Python engine on a digest-pinned official `python:3.12-alpine` image.
+The previous custom engine image is no longer used; no image build or publication
+is required. Install with an App Manager that supports source packages.
 
-Release fork of [oscarhenrycollins/chatgpt-connection](https://github.com/oscarhenrycollins/chatgpt-connection). Miguel's repository remains canonical in the public Wizard App Index; this fork is installed explicitly by repository and does not automatically publish to that index. Engine images are built from these sources in `humanitylabs-org/wizard-app-store`.
+## Ownership and storage
 
-Connect your ChatGPT subscription once; your agent signs in with it and Wizard shows it as connected.
+Open the page, **Connect**, open `https://auth.openai.com/codex/device`, enter the
+short code and approve. Do not paste codes, passwords or tokens into chat. The
+public OAuth client and endpoints match stock Hermes' Codex device flow:
+`app_EMoamEEZ73f0CkXaXp7hrann`, deviceauth usercode/token, then `/oauth/token`
+with the returned authorization code/verifier and `/deviceauth/callback` redirect.
+The app's **Test** verifies authenticated model discovery and quota and retries
+Hermes registration. **Disconnect** deletes the local ChatGPT credentials and
+removes the app's Hermes pool entry; replies already in flight may finish. It is
+not global account revocation: use ChatGPT's account controls for that.
 
-A [Wizard app](https://www.aiwizards.com/wizard-apps) (System App) and the ChatGPT **AI connection** app under decision #61 (one connection app per AI provider). Open its page, press **Connect**, open the ChatGPT link and enter the short code. The page finishes by itself.
+`APP_DATA_DIR` is the **in-container** storage directory (default `.data` for local
+source runs). Compose sets it to `/data` and bind-mounts `${APP_DATA_DIR}/data:/data`:
+Runtipi's outer `APP_DATA_DIR` is the host app-data root. There are **no named
+Docker volumes**. Prepare that host directory for UID/GID 1000 before starting the
+container. App Manager backup captures this bind mount.
 
-The sign-in is **Hermes Agent's own ChatGPT (Codex) device-code login**, started through the agent's stock dashboard API with the dashboard login the app was installed with. Hermes stores and renews the tokens. Codex refresh tokens are single-use, so this app never holds, copies or refreshes one. Connecting never moves a working agent off its current account; **Use ChatGPT** does that on request.
+- Directory: `0700`. `connection.json`, `gateway-token.json`, `.oauth.lock` and
+  `registration.json`: `0600`. They are plaintext owner-only secrets, not encrypted
+  at rest; encrypt the disk/backups. Never put app-data into a source checkout.
+- Refresh 120 seconds before expiry, on demand. Process mutex + filesystem flock
+  serialize renewal across threads/processes. Re-read while locked; persist the
+  rotated chain using same-directory replace, file fsync and directory fsync.
+- `invalid_grant` and explicit expired/reused/invalidated refresh-chain errors erase
+  the unusable chain, mark `expired`, require reconnect.
+  No automatic replay of a timed-out token exchange: a durable refreshing marker
+  becomes reconnect-required after an ambiguous result or crash. Just-received
+  rotated credentials are retained in memory for retrying a failed disk write
+  before any further refresh. A process crash during a provider-accepted refresh
+  followed by a network/disk failure can still require reconnect; single-use
+  refresh tokens cannot be made transactionally atomic with a remote OAuth server.
+- No live Hermes auth/config files are mounted or read by this app.
 
-## Contract: `wizard.ai-connection/2`
+## Stock Hermes: native Codex through the box
 
-`GET /api/connection` (box-only, never a token, cached 60 s):
+The preferred runtime is **(b), `openai-codex`**, not a named custom runtime:
 
-```json
-{"contract": "wizard.ai-connection/2", "provider": "chatgpt", "name": "ChatGPT",
- "status": "connected", "plan": null, "account": "you@example.com", "usage": null, "error": null}
+```yaml
+model:
+  provider: openai-codex
+  default: <an entitled model from the app catalogue>
 ```
 
-- `status` is `connected | not_connected | error`.
-- `usage` comes from the existing Wizard OS plugin usage route when available, otherwise remains `null`. Hermes alone reads its own credentials.
-- Requests carrying `tailscale-user-login`, `x-forwarded-for`, `forwarded`, `x-real-ip` or `cf-*` are refused (403).
+Set `HERMES_CODEX_BASE_URL=http://wizard-chatgpt:8801/v1`. Hermes holds only the
+opaque per-install gateway bearer. It can live in a manual **API-key** pool entry
+labelled `wizard-chatgpt` for provider `openai-codex` (the registration path), or in
+an isolated singleton `auth.json` entry with **only** `tokens.access_token` set to
+that local bearer (the tested alternative). Never give Hermes a real ChatGPT
+token or refresh token. The local key is not a JWT and has no OAuth expiry/refresh.
+Do not use `hermes auth add openai-codex`: that creates a second OAuth owner.
 
-## Where it works
+After approval the app uses the stock dashboard APIs to:
 
-- **Hermes Agent app from Wizard Apps (fresh Wizard):** works. `wam install wizard-chatgpt` fills the dashboard login from that app (`uses: [hermes-agent]`).
-- **Alongside (your own Hermes on the host):** status reads `error` with a plain message. The host Hermes runs no persistent dashboard, and the rootless-Docker app can't reach host loopback. Sign in on the host with `hermes auth add openai-codex`; Wizard still shows your ChatGPT usage from that sign-in.
+1. Refuse existing non-app Codex pool entries and a legacy singleton login
+   (via the stock read-only OAuth status endpoint) instead of redirecting another login.
+2. Advertise the `wizard-chatgpt` named custom endpoint, `api_mode: codex_responses`,
+   `make_default: false`, with just the local key (same endpoint API as Tinfoil).
+3. Set `HERMES_CODEX_BASE_URL` and provision the native `openai-codex` API-key pool
+   entry, reading back the endpoint and pool. Re-registration replaces only its
+   own labelled row when its saved key fingerprint/base changes; otherwise it is
+   idempotent. Registration and disconnect are serialized. The app's current default model is **never selected for you**.
 
-## Connection Router (`wizard.ai-connection/2`, decision #65)
+To retain all native features, explicitly select **OpenAI Codex** in Hermes, not
+the advertised **ChatGPT app** custom fallback. A running agent may need a fresh
+session/process to reload the endpoint environment. On a pre-existing host with
+real Codex credentials, registration reports `conflict`; stop/migrate that old
+login deliberately before enabling this route. Do not combine two refresh owners.
+Dashboard credentials are used **only for registration**, never for model calls,
+usage or OAuth. If the dashboard is absent, ChatGPT and Connection Router still
+work; registration reads `unavailable`. A failed registration does not erase login.
 
-Implements [spec/CONNECTION_ROUTER.md](https://github.com/humanitylabs-org/wizard-os/blob/main/spec/CONNECTION_ROUTER.md).
-The `/1` status/plan/account/usage fields keep their existing semantics; `/2` adds
-`models: [{id, label, tier, abilities}]` (context size is optional and not guessed).
-These are configured model allowlists, not entitlement probes. Unavailable models
-fail closed; there is no account, model or provider fallback.
+| Stock Hermes runtime | Text/tools/streaming | Native web-search tool | Quota UI path | Server-side compaction |
+|---|---|---|---|---|
+| (a) named `providers.chatgpt-box`, `codex_responses` | Yes | No: remains function | No | No |
+| (b) `openai-codex` + box base + local bearer | Yes | Yes: maps to `web_search` | Yes, proxied | Yes, `/responses/compact` |
 
-`POST /api/infer` accepts `{model, system?, messages, max_tokens?, stream?, abilities?}`.
-Messages are nonempty lists of exact `{role: "user"|"assistant", content: string}`.
-Only streaming is supported (`stream: true` or omitted), with SSE `delta` text,
-then `done` carrying the **provider-reported effective model** and usage. Errors use
-`signed_out|expired|limit|unreachable|provider_error`. Missing done is failure;
-discard provisional text on an error. No arbitrary tools, profile, URL or headers
-are accepted in the body. No inference request/response content is logged or saved.
+Verified on unmodified Hermes `818c13be1dc4fd28987e1e881a9408224afd4535`.
+The comparison includes native tool mapping, real stock quota parsing against a
+fake backend, and SDK compaction through the gateway. Real data-plane acceptance
+covers plain text, terminal tool round-trip, incremental streaming and quota;
+**real native web search/compaction generation were not exercised**.
 
-### Router grants and exposure
+Disconnect leaves the Codex base override fail-closed (box URL), even after pool
+removal, so a stale local bearer cannot be redirected to ChatGPT by removing the
+override. Do not delete that override while a residual app bearer remains. Before ever
+returning to a different native Hermes OAuth login, stop its callers, verify both
+the app pool row and custom endpoint/key are removed, then remove this app
+override deliberately. Never add a real Hermes OAuth credential while it remains.
+A failed dashboard cleanup reports `unregister_failed`, not a successful removal.
 
-`WIZARD_GRANTS_FILE` uses the router's configuration shape:
+## Box-only gateway and Connection Router
+
+Only the local bearer in `gateway-token.json` authenticates `/v1/*`. Browser
+Origin/Referer/Cookie/Fetch-Metadata, proxy/forwarded and tailnet identity headers
+are refused even with the key. The owner page password is not a gateway key. Keep
+the app on a trusted private app network; no public port or browser CORS access.
+
+Fixed routes, never an arbitrary URL proxy:
+
+- `GET /v1/models` → Codex model catalogue, OpenAI-compatible list.
+- `POST /v1/responses` → Codex Responses SSE, flushed line-by-line. The gateway
+  forces `store:false`, `stream:true`, supplies instructions and strips API-only
+  sampling/output-limit knobs rejected by Codex. Function calls and native tools
+  pass unchanged. Streaming is the supported Codex transport, even when an API
+  caller omits `stream`.
+- `POST /v1/responses/compact` → native compaction.
+- `GET /v1/api/codex/usage` and `/rate-limit-reset-credits` → the matching `/wham/`
+  endpoints that stock `agent/account_usage.py` derives for a non-backend-api base.
+- `POST /v1/api/codex/rate-limit-reset-credits/consume` → the explicit stock quota
+  reset action, not used by Test or automated acceptance.
+
+The app injects the real Authorization, account-id, `originator: hermes-agent` and
+residency headers. Only quota/retry headers pass back; upstream error bodies and
+cookies do not. Eight gateway requests at once, 16 MiB request limit, 4 MiB line /
+64 MiB stream bounds, 120 s socket timeout and 600 s checked stream deadline.
+Request bodies, credentials, account identifiers and upstream errors are not logged.
+
+`GET /api/connection` retains `wizard.ai-connection/2`, including app-owned status,
+plan, safe usage limits and entitled catalogue. `account` is deliberately null;
+OAuth claims/account IDs are not surfaced. `chatIntegration` describes registration.
+
+`POST /api/infer` still accepts explicit text-only router input:
+`{model, system?, messages, stream?: true, max_tokens?, abilities?}`. It now calls
+Codex directly with the app-owned token, not a Hermes plugin. The catalogue is
+validated; messages allow only user/assistant text. Tools, alternate URLs, profiles
+and identities are refused. SSE is `delta`, then an effective-model checked `done`
+with provider usage, or `error`. Missing done / model mismatch is failure. Discard
+provisional text on error. Two active router streams; 256 KiB requests/lines,
+4 MiB stream bound, 120 s deadline, disconnect cancellation and heartbeats.
+`max_tokens` is validated for compatibility but **not an enforced output budget**:
+Codex rejects `max_output_tokens`; the byte/time bounds are the actual guards.
+
+Router grants retain the existing configuration:
 
 ```json
-{"enforce": true, "incoming": [{"from": "wizard-connection-router", "sha256": "<64 lowercase hex SHA-256 of the opaque router grant>"}]}
+{"enforce":true,"incoming":[{"from":"wizard-connection-router","sha256":"<64 lowercase hex characters>"}]}
 ```
 
-The router sends that opaque token in `X-Wizard-Grant`; configure its `outgoing`
-entry under this provider's app ID. Known grants belonging to other apps are
-refused. Missing/malformed grant files fail closed. With no file, or `enforce:false`,
-unknown grants are **report-only**, matching the permissions rollout: network peers
-are not authenticated as the router. `X-Wizard-App` is never authentication.
-Do not expose this port to untrusted peers until enforcement is enabled. Browser
-Origin and proxy-identity headers are refused even with a valid grant. A recognized router grant also permits discovery when the owner page has a password;
-unknown/report-only grants do not bypass that password. The owner
-page password is not an inference credential. Keep owner routes behind their
-existing access controls; router traffic stays on the private app network.
+Set `WIZARD_GRANTS_FILE` to that file, and send the matching opaque `X-Wizard-Grant`.
+Absent enforcement is report-only, **not caller authentication**. Missing/malformed
+configured files fail closed. Grants do not authorize OAuth controls or the model
+gateway. `/api/connection` accepts a recognized router grant when the page has a
+password; unknown grants cannot bypass it.
 
-### Verification and release
+## Move to another box (one active refresher)
 
-Run the offline tests below; they use only loopback fixtures, never real sign-ins.
-Container builds/tests must run on the release builder, not the control-plane VPS.
-This source PR does not publish engine images or change the existing pinned image
-digests in compose. Before store rollout, the maintainer must build/publish these
-sources and update the engine digest; merging metadata alone does not deploy `/2`.
+1. Stop the old app completely, including workers and in-flight requests. Stop
+   Hermes callers. Never run old and new copies simultaneously.
+2. Back up/copy **the entire host app-data directory**, preserving ownership/modes,
+   including the gateway token and credential file. Treat the backup as a secret.
+3. Restore it to the new app's `${APP_DATA_DIR}` bind source; use UID/GID 1000 and
+   no named volume. Start only the new copy.
+4. Update the app's dashboard URL/credentials and `WIZARD_CHATGPT_AGENT_URL` for the
+   new private network. Press **Test** to verify login and register local routing.
+5. Start a new Hermes session using the native `openai-codex` provider. At the next
+   expiry/skew window only the new app refreshes. Do not restart the old copy:
+   its refresh token becomes stale as soon as rotation occurs on the new box.
 
-### ChatGPT implementation
+The automated migration test copies app-data, instantiates only the destination
+for renewal, preserves the local key, and verifies successful refresh rotation.
+Rollback after rotation requires copying the **newest** stopped store back, not
+restoring an old token chain. This does not test a real second physical box.
 
-Discovery comes from Hermes `GET /api/plugins/wizard-os/models/chatgpt`.
-Inference forwards to `POST /api/plugins/wizard-os/infer/chatgpt`, using this
-app's existing authenticated dashboard cookie session. No ChatGPT token is ever
-read or copied. The router's caller headers are not forwarded; `abilities` are
-validated against the plugin catalogue, then removed because the plugin schema
-accepts only model/system/messages/max_tokens/stream. No agent API is called.
+## Configuration
 
-Requires **Hermes plugin wizard-os >=0.4.0**, hosted in-process (host isolation
-buffers SSE and is unsupported by the plugin). A missing discovery/inference route
-returns `provider_error` with `Hermes plugin wizard-os >=0.4.0 required`.
-Delta and done SSE frames pass through unchanged; nested plugin errors are
-normalized to the router's top-level code shape. Missing/mismatched done fails.
-No redirect or inference POST replay is allowed. Two active streams, 256 KiB
-request/frame bounds, 4 MiB total stream and 120 s stream deadline bound resources.
-Heartbeats let disconnects cancel the upstream response; cancellation shuts down
-the urllib response socket before closing its buffered reader (retest this stdlib
-seam on Python upgrades). Upstream connection/header wait is bounded at 120 s.
-The plugin imposes its own tighter total inference and local token/byte guards.
+- `APP_DATA_DIR`: writable in-container app-data location.
+- `WIZARD_CHATGPT_PORT` / `WIZARD_CHATGPT_BIND`: engine listen address (default 8801,
+  `0.0.0.0`; bind loopback for a local source-only run).
+- `WIZARD_CHATGPT_PASSWORD`: optional owner-page Basic password, not a model key.
+- `WIZARD_CHATGPT_HERMES_URL`, `_USER`, `_PASSWORD`: optional dashboard registration.
+- `WIZARD_CHATGPT_AGENT_URL`: private URL Hermes should call; default
+  `http://wizard-chatgpt:8801/v1`. Not a browser/Serve URL.
+- `WIZARD_TRUSTED_ORIGINS`: frame-ancestor origins for hosted Appearance transport.
+- `WIZARD_GRANTS_FILE`: router grant enforcement.
+
+The page preserves Appearance v1 (`--wz-*`, live skin updates, hosted transparent
+canvas, standalone fallback); Connect / Test / Disconnect never expose a token.
+MCP `connection_status` is read-only, reporting the same safe app-owned status.
+
+## Verification
 
 ```sh
+python3 test-package.py
 python3 test-chatgpt.py
 python3 test-inference.py -v
 python3 mcp/inline.py --check
 ```
 
-No live plugin install, dashboard restart or real ChatGPT call is part of these tests.
+The package test boots the real source engine against fresh empty scratch app-data,
+checks health/version and the disconnected page/status, and asserts the source and
+data mount contract. It is a process-level smoke test, not Docker/installed-box QA.
+Other tests use only fake loopback OAuth/Codex servers. They cover device exchange,
+rotation and process-safe single-flight, invalid_grant, migration, gateway browser
+and auth refusals, streaming, secret suppression and Router contract behavior.
+`qa/` contains the Appearance/controls hosted proxy (not real-shell/physical-device
+acceptance). `test-container.sh` optionally boots the same pinned official Python
+image with the repo mounted read-only on a builder; it does not build a custom
+image and was not run on this control-plane task. No images or app index entries
+are published.
 
-## Files
+### Remaining owner gate: real device login/renewal
 
-- `wizard.md`: what the app is and what it gives the agent (spec: wizard.md v0.2).
-- `runtipi/`: stock Runtipi `config.json` and `docker-compose.yml` (engine pinned by digest).
-- `mcp/`: a read-only MCP (`connection_status`), inlined into the compose file by `python3 mcp/inline.py`.
-- `server.py`, `static/`, `Dockerfile`: the page image `ghcr.io/humanitylabs-org/wizard-chatgpt`, built and published from `humanitylabs-org/wizard-app-store` `images/wizard-chatgpt`.
-- `test-chatgpt.py`, `test-container.sh`: the stand-in-dashboard and container tests CI runs before publishing.
-- `SKILL.md`: the skill the agent loads when this app is installed.
-- `.github/workflows/publish.yml`: manual dispatch only; do not publish this fork under the canonical app ID.
-
-Replaces the ChatGPT part of [AI Accounts](https://github.com/oscarhenrycollins/ai-accounts). For your own subscription on your own server.
+On an isolated candidate built from this branch, bind a **fresh empty** app-data
+folder; do not reuse or copy the owner's Hermes credentials. Have the owner open
+the candidate page and press Connect, approve the code at the OpenAI page, return
+and see Connected. Press Test, verify plan/quota and registration; confirm Hermes'
+default model was unchanged. Explicitly select native OpenAI Codex and send a
+plain question, a harmless terminal tool request and a streaming question. Wait
+for natural renewal (or adjust only the candidate store's `expires_at`, never a
+live token) and verify that the app alone rotates once and Hermes still has no
+ChatGPT credential. Stop the old candidate, copy its app-data to an isolated second
+candidate, Test/send again, and do not restart the old copy. Finally Disconnect
+and verify new requests fail. **Owner approval is required for this login; this
+branch's acceptance did not initiate a real device-code sign-in or rotate the
+owner's existing ChatGPT refresh token.**

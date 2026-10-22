@@ -1,1 +1,6 @@
 __pycache__/
+.data/
+.env
+*.pyc
+qa/output/
+qa/node_modules/

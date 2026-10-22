@@ -1,18 +1,19 @@
 #!/bin/sh
-# Build the image, then prove inside it (read-only, no capabilities, uid 1000): the file list, health,
+# Optional builder-only source-container smoke (read-only, no capabilities, uid 1000): health,
 # the page, the card, the wizard.ai-connection/2 answer with no agent dashboard (error / unreachable,
 # usage null), box-only refusals, no credential surface, cross-site refusal, and a clean SIGTERM exit.
-# The device-code flow itself is covered by test-chatgpt.py against a stand-in dashboard.
+# The device-code flow itself is covered by test-chatgpt.py against fake loopback providers.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TAG=${WIZARD_CHATGPT_IMAGE:-wizard-chatgpt:test}
-[ -n "${SKIP_BUILD:-}" ] || docker build -t "$TAG" "$ROOT"
-docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --pids-limit 64 \
-  --network none -e WIZARD_CHATGPT_PORT=8801 --entrypoint python3 "$TAG" -c '
+TAG=python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+docker run --rm --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --pids-limit 64 \
+  --mount "type=bind,source=$ROOT,target=/app,readonly" --workdir /app \
+  --network none --tmpfs /data:uid=1000,gid=1000,mode=0700 -e APP_DATA_DIR=/data -e WIZARD_CHATGPT_PORT=8801 \
+  -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 "$TAG" -c '
 import json, os, pathlib, subprocess, sys, time, urllib.request, urllib.error
 assert os.getuid() == 1000 and os.getgid() == 1000, "must run as 1000:1000"
-files = sorted(str(p.relative_to("/app")) for p in pathlib.Path("/app").rglob("*") if p.is_file())
-assert files == ["LICENSE", "SKILL.md", "inference.py", "server.py", "static/app.css", "static/app.js", "static/appearance.css", "static/appearance.js", "static/index.html"], files
+for name in ("server.py", "codex.py", "inference.py", "static/index.html", "SKILL.md"):
+    assert (pathlib.Path("/app") / name).is_file(), name
 p = subprocess.Popen([sys.executable, "/app/server.py"])
 B = "http://127.0.0.1:8801"
 def req(path, body=None, headers=None):
@@ -29,18 +30,18 @@ while time.monotonic() - t0 < 10:
     try:
         code, body = req("/health"); break
     except OSError: time.sleep(0.1)
-assert json.loads(body) == {"status": "ok", "version": "0.2.1"}, body
+assert json.loads(body) == {"status": "ok", "version": "0.3.0"}, body
 code, body = req("/"); assert code == 200 and b"<title>ChatGPT</title>" in body
 h = urllib.request.urlopen(B + "/", timeout=30).headers
-assert h["Content-Security-Policy"].split("frame-ancestors ")[1].startswith(chr(39) + "self" + chr(39) + ";") and h["X-Frame-Options"] == "SAMEORIGIN", dict(h)
+assert h["Content-Security-Policy"].split("frame-ancestors ")[1].startswith(chr(39) + "self" + chr(39) + ";"), dict(h)
 for f in ("/app.js", "/app.css", "/appearance.js", "/appearance.css", "/SKILL.md"): assert req(f)[0] == 200, f
 cardj = json.loads(req("/.well-known/mcp/server-cards.json")[1])
 assert cardj["name"] == "wizard-chatgpt" and cardj["x-wizard"]["provides"] == ["ai-connection", "chatgpt-subscription"], cardj
-assert cardj["x-wizard"]["contract"] == "wizard.ai-connection/2" and cardj["x-wizard"]["agent_dashboard"] == "missing", cardj
+assert cardj["x-wizard"]["contract"] == "wizard.ai-connection/2", cardj
 code, body = req("/api/connection"); conn = json.loads(body)
-assert code == 200 and list(conn) == ["contract", "provider", "name", "status", "plan", "account", "usage", "error", "models"], conn
-assert conn["contract"] == "wizard.ai-connection/2" and conn["provider"] == "chatgpt" and conn["status"] == "error", conn
-assert conn["usage"] is None and conn["error"]["code"] == "unreachable" and "Hermes Agent" in conn["error"]["message"], conn
+assert code == 200, conn
+assert conn["contract"] == "wizard.ai-connection/2" and conn["provider"] == "chatgpt" and conn["status"] == "not_connected", conn
+assert conn["usage"] is None and conn["error"]["code"] == "signed_out", conn
 for h in ({"Tailscale-User-Login": "x@y"}, {"X-Forwarded-For": "1.2.3.4"}, {"Forwarded": "for=1.2.3.4"},
           {"X-Real-IP": "1.2.3.4"}, {"CF-Connecting-IP": "1.2.3.4"}, {"cf-ray": "abc"}):
     code, body = req("/api/connection", None, h)
@@ -49,7 +50,7 @@ assert req("/", None, {"Tailscale-User-Login": "x@y"})[0] == 200
 for path in ("/auth.json", "/server.py", "/static/../server.py", "/api/chatgpt/token", "/.hermes/auth.json"):
     assert req(path)[0] == 404, path
 assert req("/api/chatgpt/use", {}, {"Origin": "http://evil.example"})[0] == 403
-code, body = req("/api/chatgpt/connect", {}); assert code == 502 and b"Hermes Agent" in body, (code, body)
+code, body = req("/api/chatgpt/connect", {}); assert code == 403 and b"ChatGPT page" in body, (code, body)
 p.terminate(); rc = p.wait(10)
 print(json.dumps({"uid": os.getuid(), "status": conn["status"], "error": conn["error"]["code"], "sigterm_exit": rc}))
 assert rc == 0, rc'

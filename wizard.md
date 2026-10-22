@@ -5,8 +5,8 @@ name: ChatGPT
 type: external
 category: system
 tags: [security]
-version: 0.2.1
-summary: Connect your ChatGPT subscription once; your agent signs in with it and Wizard shows it as connected.
+version: 0.3.0
+summary: App-owned ChatGPT login and renewal; stock Hermes uses its box-only model endpoint without ChatGPT credentials.
 icon: icon.png
 license: MIT
 source: https://github.com/humanitylabs-org/chatgpt-connection
@@ -14,6 +14,7 @@ runtime:
   kind: runtipi
   config: runtipi/config.json
   compose: runtipi/docker-compose.yml
+  package: source
 mcp:
   path: /mcp
   port: 8801
@@ -32,6 +33,8 @@ health: /health
 
 # ChatGPT
 
-Connect your ChatGPT Plus or Pro subscription once on the ChatGPT page, and your Hermes Agent uses it. The sign-in is the agent's own ChatGPT device-code login. Hermes keeps and renews the tokens, so this app never sees them.
+The ChatGPT app owns its Codex device-code login, stores it in its private app-data bind mount, and is the only refresher. Connect / Test / Disconnect are owner actions on its Appearance v1 page. Hermes receives only a per-install box-local bearer, never a ChatGPT credential. Connecting never selects a default model.
 
-This is a Wizard AI connection app (`wizard.ai-connection/2`): `GET /api/connection` reports whether ChatGPT is connected, and the MCP tool `connection_status` gives agents the same answer. Usage (plan and limits) comes from the agent's own read through the Wizard OS Hermes plugin route, so this app still never holds a token; on an agent without that route usage is `null`. It replaces the ChatGPT part of AI Accounts.
+`GET /api/connection` and the read-only MCP tool `connection_status` report `wizard.ai-connection/2` with app-owned status, plan, safe usage and models. Connection Router `/api/infer` also uses the app-owned login directly. Stock Hermes uses `/v1/responses`, models, compaction and quota proxy routes. Prefer native `openai-codex` + `HERMES_CODEX_BASE_URL` for native web search, quota and server-side compaction; the named custom fallback loses those features.
+
+This is a `runtime.package: source` app: its stdlib Python engine runs the exact installed revision from `${APP_SOURCE_DIR}` read-only on a digest-pinned official Python image. No custom image build or publication is required. See README for storage, single-refresher migration and verification.

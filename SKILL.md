@@ -1,48 +1,42 @@
 ---
 name: wizard-chatgpt
-description: Use when the owner wants his agent on this Wizard server to use his ChatGPT subscription, or asks whether ChatGPT is connected. The ChatGPT app starts the agent's own ChatGPT sign-in; agents never handle the token.
+description: Use when checking the ChatGPT app connection or routing stock Hermes through its app-owned Codex login.
 ---
 
-# ChatGPT (Wizard AI connection app)
+# ChatGPT app-owned connection
 
-The ChatGPT app is where the owner connects his ChatGPT subscription (Plus or Pro) once for the
-server (decision #61: one connection app per AI provider). It replaces the ChatGPT part of AI Accounts.
+The **ChatGPT app**, not Hermes, stores and renews the subscription login in its
+private app-data bind mount. Never read/copy/print its credential or gateway key.
+Never ask for passwords, device codes or tokens in chat.
 
-## What the agent must know
+- Owner login: open the app page, **Connect**, approve the short code at OpenAI,
+  return to Connected. **Test** verifies models/quota and retries registration.
+  **Disconnect** removes local login; in-flight replies may finish.
+- MCP `connection_status` or box-only `GET /api/connection` reports
+  `wizard.ai-connection/2`: status, plan, safe usage, models and registration.
+  Account IDs/tokens are never returned. `expired` means reconnect **in this app**,
+  not `hermes auth add openai-codex`.
+- Connecting **never changes the Hermes default model**. For full native features,
+  the owner explicitly selects `openai-codex`; `HERMES_CODEX_BASE_URL` points to
+  this app's `/v1`, and Hermes holds only the opaque app bearer in an API-key pool
+  entry. No real ChatGPT token or refresh token belongs in Hermes.
+- The dashboard also advertises a named custom **ChatGPT app** fallback. Selecting
+  that custom entry loses native web search/quota/compaction; use native OpenAI
+  Codex for those. Existing non-app Codex pool entries cause a registration
+  conflict rather than a silent takeover. A fresh Hermes process may be needed.
+- Other apps declare model requirements and use Connection Router, not the owner
+  UI. `/api/infer` validates explicit text only, with no persona/memory/session.
+  `done` must name the effective approved model; provisional text is not success.
+  Never work around an error by switching model, identity or account.
+- Gateway requests require the box-local bearer; browser/forwarded headers are
+  refused even with it. Router grants are report-only unless enforced: keep all
+  model traffic on the private app network. Page passwords are not model keys.
+- Migration: **stop old app and callers first**, copy the entire app-data folder
+  with its modes/owner, start only the new copy, Test and re-register. Rotation
+  makes old backups stale. Never run two boxes from one rotating token chain.
+- `0.3.0` uses `runtime.package: source`: App Manager mounts the exact installed
+  repository revision read-only on a digest-pinned official Python image. No
+  custom image build is required. Do not claim a branch is installed without readback.
 
-- The sign-in is done **by the owner, on the ChatGPT app's page** (`http://<server>:8800`): press
-  **Connect**, open the ChatGPT link, enter the short code shown, approve. The page finishes by itself.
-  Never ask the owner for a code, token or password in chat, and never try to sign in yourself.
-- The sign-in runs inside Hermes Agent (its own ChatGPT device-code login), so Hermes keeps and renews
-  the tokens. Never read, copy, print or send Hermes' `auth.json` or any ChatGPT token: ChatGPT refresh
-  tokens are single-use, so a copy signs the agent out.
-- Status (read-only, never a token): the MCP tool `connection_status`, or
-  `GET http://wizard-chatgpt:8800/api/connection` from the app network. It returns the
-  `wizard.ai-connection/2` shape: `status` (`connected`, `not_connected`, `expired`, `error`), `account`
-  when known, `usage` from the plugin when available (otherwise null), and `error` with a plain message.
-
-## Switching the agent to ChatGPT
-
-Connecting never moves a working agent off its current account. If the agent had no working account,
-connecting switches it to ChatGPT; otherwise the page shows **Use ChatGPT**. Don't switch the provider
-or model unless the owner asks.
-
-## When status is `error`
-
-The app needs the Hermes Agent app from Wizard Apps (it drives that agent's dashboard). On a server
-where the owner's own Hermes runs outside Wizard Apps, the page says so: the owner signs in there with
-`hermes auth add openai-codex` (or `hermes model`), and Wizard still shows ChatGPT usage from it.
-
-## Isolated model calls (decision #65)
-
-- Apps declare `requires.models` and call the Connection Router, not this provider directly.
-- `/api/connection` now adds a `models` catalogue; existing status, plan, account and usage fields remain.
-- `/api/infer` is a router backend, not an agent API: explicit text only, no persona, memory or session persistence.
-- Text deltas are provisional. Only a final `done` with the approved effective model is success.
-- Never work around `signed_out`, `expired`, `limit`, `unreachable` or `provider_error` by switching accounts/models.
-- Grants are report-only until enforcement is configured. Keep the app on a trusted private network; see README.
-
-## Limits
-
-- One agent per app: the ChatGPT sign-in belongs to the Hermes Agent this app is installed with.
-- Personal use with the owner's own subscription.
+See README for routing config, storage/backups, test commands, migration and the
+remaining owner-approved real device-login/renewal acceptance steps.
