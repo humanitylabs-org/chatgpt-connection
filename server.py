@@ -251,9 +251,20 @@ POST_GATEWAY = {"/v1/responses": "/codex/responses", "/v1/responses/compact": "/
                 "/v1/api/codex/rate-limit-reset-credits/consume": "/wham/rate-limit-reset-credits/consume"}
 
 
+# Node's built-in fetch (undici) always adds `Sec-Fetch-Mode: cors`, so that one header alone is a
+# box-local server caller (the Wizard Agent Service reading usage), not a browser. Browsers also send
+# Sec-Fetch-Site/Dest, which stay refused along with every proxy and cookie header.
+SERVER_FETCH_HEADERS = frozenset({"sec-fetch-mode"})
+
+
+def browser_or_proxy(key):
+    k = key.lower()
+    return (k in {"origin", "referer", "cookie", "tailscale-user-login", "forwarded", "x-real-ip", "via"}
+            or (k.startswith(("cf-", "x-forwarded-", "sec-fetch-")) and k not in SERVER_FETCH_HEADERS))
+
+
 def box_only(headers):
-    return not any(k.lower() in {"origin", "referer", "cookie", "tailscale-user-login", "forwarded", "x-real-ip", "via"}
-                   or k.lower().startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in headers)
+    return not any(browser_or_proxy(k) for k in headers)
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -25,7 +25,8 @@ class Fault(Exception):
 def admit(headers):
     """Same grants file shape as the router; no owner/browser credentials accepted."""
     refused = {"origin", "referer", "cookie", "tailscale-user-login", "forwarded", "x-real-ip", "via"}
-    if any(k.lower() in refused or k.lower().startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in headers):
+    # `Sec-Fetch-Mode` alone is Node's fetch on the box; browsers also send Sec-Fetch-Site/Dest.
+    if any(k.lower() in refused or (k.lower().startswith(("cf-", "x-forwarded-", "sec-fetch-")) and k.lower() != "sec-fetch-mode") for k in headers):
         raise Fault(message="Inference is box-only.", status=403)
     path = os.environ.get("WIZARD_GRANTS_FILE")
     grants = {"enforce": False, "incoming": []}

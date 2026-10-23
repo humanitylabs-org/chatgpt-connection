@@ -187,6 +187,9 @@ class OAuthTests(AppCase):
         self.assertEqual(d["usage"]["limits"][0]["remainingPercent"], 75)
         for secret in (self.conn.stored()["access_token"], self.state["refresh"], "FAKE-ACCOUNT-PRIVATE"):
             self.assertNotIn(secret, raw.decode())
+        # The Agent Service reads this with Node's fetch, which always adds Sec-Fetch-Mode: cors.
+        self.assertEqual(self.call("/api/connection", headers={"Sec-Fetch-Mode": "cors"})[0], 200)
+        self.assertEqual(self.call("/api/connection", headers={"Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"})[0], 403)
         self.assertEqual(self.call("/api/chatgpt/test", {}, {"X-Wizard-Request": "1"})[0], 200)
         self.assertEqual(self.call("/api/chatgpt/logout", {}, {"X-Wizard-Request": "1"})[0], 200)
         self.assertEqual(self.conn.stored(), {})
@@ -332,6 +335,9 @@ class GatewayTests(AppCase):
         self.assertEqual(self.call("/v1/models", headers={"Authorization": "Bearer wrong"})[0], 401)
         for k in ("Origin", "Referer", "Cookie", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "CF-Ray", "Sec-Fetch-Site", "Via", "Tailscale-User-Login"):
             self.assertEqual(self.call("/v1/models", headers={**self.auth(), k: "browser"})[0], 403, k)
+        # Node's fetch (the Agent Service usage reader) always sends Sec-Fetch-Mode: cors and nothing else.
+        self.assertEqual(self.call("/v1/models", headers={**self.auth(), "Sec-Fetch-Mode": "cors"})[0], 200)
+        self.assertEqual(self.call("/v1/models", headers={**self.auth(), "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "cross-site"})[0], 403)
         self.assertEqual(self.call("/v1/evil", {}, self.auth())[0], 404)
         self.state["mode"] = "error"
         status, raw, hdr = self.call("/v1/responses", {"model": "gpt-5.6-sol", "input": []}, self.auth())
