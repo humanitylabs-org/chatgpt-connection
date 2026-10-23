@@ -350,6 +350,7 @@ class GatewayTests(AppCase):
         self.seed()
         status, raw, _ = self.call("/v1/models", headers=self.auth())
         self.assertEqual((status, json.loads(raw)["data"][0]["id"]), (200, "gpt-5.6-sol"))
+        self.assertEqual(json.loads(raw)["models"][0]["slug"], "gpt-5.6-sol")  # Codex shape for stock Hermes
         self.assertEqual(self.call("/v1/api/codex/usage", headers=self.auth())[0], 200)
         self.assertEqual(self.call("/v1/api/codex/rate-limit-reset-credits", headers=self.auth())[0], 200)
         status, raw, _ = self.call("/v1/responses/compact", {"model": "gpt-5.6-sol", "input": []}, self.auth())
