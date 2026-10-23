@@ -335,7 +335,11 @@ class Handler(BaseHTTPRequestHandler):
             with owner().open(self.command if self.command != "HEAD" else "GET", routes[path], body, extra) as r:
                 if path == "/v1/models":
                     data = json.loads(r.read(codex.MAX_JSON))
-                    return self.json(200, {"object": "list", "data": [{"id": m["slug"], "object": "model", "owned_by": "chatgpt"} for m in data.get("models", []) if m.get("slug")]})
+                    rows = [m for m in data.get("models", []) if isinstance(m, dict) and m.get("slug")]
+                    # Both shapes: OpenAI `data` for generic clients, and the account-scoped Codex `models`
+                    # rows that stock Hermes' native openai-codex reads. Without `models` Hermes falls back to
+                    # its offline list, which drops account-gated models such as GPT-6 Astra.
+                    return self.json(200, {"object": "list", "data": [{"id": m["slug"], "object": "model", "owned_by": "chatgpt"} for m in rows], "models": rows})
                 if path != "/v1/responses":
                     raw = r.read(codex.MAX_JSON + 1)
                     if len(raw) > codex.MAX_JSON:
