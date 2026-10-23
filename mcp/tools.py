@@ -10,7 +10,7 @@ PROXY_HEADERS = ("tailscale-user-login", "x-forwarded-for", "forwarded", "x-real
       "plan and usage from the app-owned login, and an error message that says what to do. "
       "Read-only; never returns a token.")
 def connection_status():
-    if any(k in PROXY_HEADERS or k in ("origin", "referer", "cookie", "via") or k.startswith(("cf-", "x-forwarded-", "sec-fetch-")) for k in REQUEST.get()):
+    if any(k in PROXY_HEADERS or k in ("origin", "referer", "cookie", "via") or (k.startswith(("cf-", "x-forwarded-", "sec-fetch-")) and k != "sec-fetch-mode") for k in REQUEST.get()):
         raise PermissionError("box-only: call this MCP from the server (app network), not through the tailnet or a proxy")
     headers = {}
     auth = REQUEST.get().get("authorization")
