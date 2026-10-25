@@ -90,15 +90,37 @@ async function pollOnce() {
   await refresh();
 }
 
+async function copyCode() {
+  const code = $("code");
+  if (!code.value || $("login").hidden) return;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(code.value);
+    copied = true;
+  } catch (_) {
+    // Older browsers and denied clipboard permissions: select the visible code.
+    code.focus();
+    code.select();
+    code.setSelectionRange(0, code.value.length);
+    try { copied = document.execCommand("copy"); } catch (_) { /* Keep selected for manual copy. */ }
+  }
+  $("copy-code").textContent = copied ? "Copied" : "Copy";
+  $("copy-status").textContent = copied ? "" : "Couldn't copy automatically. Press and hold the selected code, then choose Copy.";
+}
+
+$("copy-code").addEventListener("click", copyCode);
+
 function connect() {
   return run("Asking ChatGPT for a sign-in code…", async () => {
     const data = await call("api/chatgpt/connect", {});
     if (!data.ok) return say(data.message, "bad");
     loginId = data.login_id;
     $("login-url").href = data.url;
-    $("code").textContent = data.code;
+    $("code").value = data.code;
+    $("copy-code").textContent = "Copy";
+    $("copy-status").textContent = "";
     $("login").hidden = false;
-    say("Waiting for you to approve the code on ChatGPT…");
+    say("Waiting for ChatGPT approval… This page will show Connected when you finish.", "waiting");
     stopPolling();
     timer = setTimeout(pollOnce, 3000);
   });

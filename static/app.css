@@ -19,7 +19,27 @@ button { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px sol
 button.primary { background: var(--wz-accent); color: var(--wz-on-accent); border-color: var(--wz-accent); }
 button:disabled { opacity: .5; cursor: default; }
 section { background: var(--wz-surface); border: 1px solid var(--wz-border); border-radius: 12px; padding: 16px; }
-ol { padding-left: 20px; }
+/* Put the active task first; the account controls return after sign-in/cancel. */
+main:has(#login:not([hidden])) :is(#accounts, .lead) { display: none; }
+#login { margin-top: 20px; }
+.login-steps { list-style: none; padding: 0; margin: 20px 0; }
+.login-steps li + li { border-top: 1px solid var(--wz-border); margin-top: 20px; padding-top: 20px; }
+.login-steps h3 { font-size: 17px; line-height: 1.4; margin: 0 0 12px; }
+.login-steps p { margin: 8px 0 0; }
+.code-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--wz-border); border-radius: 10px; background: var(--wz-accent-soft); }
+.code-row .code { min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font: 700 clamp(24px, 8vw, 34px)/1.4 ui-monospace, monospace; letter-spacing: .025em; color: var(--wz-text); }
+#copy-code { min-width: 88px; font-weight: 600; }
+.copy-status { font-size: 14px; color: var(--wz-error); }
+.copy-status:empty { display: none; }
+.login-link { display: inline-flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 48px; padding: 10px 16px; border: 1px solid var(--wz-accent); border-radius: 10px; background: var(--wz-accent); color: var(--wz-on-accent); text-decoration: none; font-weight: 600; }
+.step-hint { font-size: 14px; color: var(--wz-text-secondary); }
+#message.waiting { padding: 12px 16px; border-left: 3px solid var(--wz-accent); background: var(--wz-accent-soft); border-radius: 2px; }
+html[data-skin="signal"] :is(.code-row, .login-link) { border-radius: 2px; }
+html[data-skin="signal"] .login-link { font-family: ui-monospace, monospace; }
+@media (max-width: 359px) {
+  .code-row { grid-template-columns: 1fr; }
+  .code-row .code { font-size: 28px; text-align: center; }
+}
 a { color: var(--wz-accent); word-break: break-word; }
 label { display: block; font-weight: 600; margin-top: 8px; }
 input { background: var(--wz-surface); color: var(--wz-text); width: 100%; font: inherit; padding: 10px 12px; border: 1px solid var(--wz-border); border-radius: 10px; margin-top: 4px; }
