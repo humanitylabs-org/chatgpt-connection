@@ -1,12 +1,14 @@
 "use strict";
-let revision = 0, skins;
+let revision = 0, skins, colorSchemes;
 const frame = document.querySelector("iframe");
 window.setSkin = async function (skin) {
-  skins ||= (await (await fetch("skins.json")).json()).skins;
-  const s = skins[skin];
+  if (!skins) ({skins, colorSchemes} = await (await fetch("skins.json")).json());
+  const s = skins[skin], scheme = colorSchemes[skin];
+  document.documentElement.style.colorScheme = scheme;
+  frame.style.colorScheme = scheme;
   for (const [k,v] of Object.entries(s)) document.documentElement.style.setProperty("--"+k,v);
   document.documentElement.dataset.skin=skin;
-  frame.contentWindow.postMessage({type:"wizard:appearance", appearance:{version:1,revision:++revision,skin,colorScheme:"dark",presentation:"window",tokens:{
+  frame.contentWindow.postMessage({type:"wizard:appearance", appearance:{version:1,revision:++revision,skin,colorScheme:scheme,presentation:"window",tokens:{
     canvas:"transparent",base:s.bg,chrome:s["sk-win"],overlay:s["glass-2"],surface:`color-mix(in srgb, ${s.ink} 6%, transparent)`,"surface-raised":`color-mix(in srgb, ${s.ink} 10%, transparent)`,text:s.ink,"text-secondary":s["ink-2"],"text-muted":s["ink-3"],border:s["line-2"],accent:s["violet-2"],"accent-soft":`color-mix(in srgb, ${s["violet-2"]} 16%, transparent)`,"on-accent":s.bg,"reader-surface":s.bg
   }}},location.origin);
 };

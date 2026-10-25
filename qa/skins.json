@@ -1,6 +1,7 @@
 {
   "source": "wizard-ux/core/skins.js",
-  "sha256": "82e6dfcb21f4b6b609fa5746d4185f1c099c2ef07fc5e7cc3d05448a3511173e",
+  "sha256": "aad943cf726de1c9153aa1bcde26cbdff870cc67fa03648f9318dc3689008ca7",
+  "colorSchemes": {"nebula": "dark", "signal": "dark", "sepia": "light"},
   "skins": {
     "nebula": {
       "bg": "#05030c",
@@ -51,6 +52,31 @@
       "sk-tour": "rgba(0,8,3,.88)",
       "sk-dim": "rgba(0,0,0,.76)",
       "sk-win": "rgba(0,10,4,.86)"
+    },
+    "sepia": {
+      "bg": "#f3ead2",
+      "ink": "#332b22",
+      "ink-2": "#5f5243",
+      "ink-3": "#786651",
+      "line": "rgba(86,65,40,.16)",
+      "line-2": "rgba(86,65,40,.30)",
+      "glass": "rgba(236,222,190,.76)",
+      "glass-2": "rgba(247,239,219,.92)",
+      "violet": "#76533d",
+      "violet-2": "#684733",
+      "pink": "#9a5c56",
+      "cyan": "#557878",
+      "amber": "#94691d",
+      "green": "#57704d",
+      "red": "#a34236",
+      "sk-time-a": "#3a3026",
+      "sk-time-b": "#735b43",
+      "sk-dock": "rgba(238,225,197,.96)",
+      "sk-dock-line": "rgba(86,65,40,.16)",
+      "sk-ddot": "rgba(86,65,40,.52)",
+      "sk-tour": "rgba(247,239,219,.94)",
+      "sk-dim": "rgba(75,55,32,.24)",
+      "sk-win": "rgba(247,239,219,.94)"
     }
   }
 }

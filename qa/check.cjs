@@ -13,7 +13,7 @@ const assert=(v,m)=>{if(!v)throw Error(m)};
   browser=await chromium.launch({headless:true,executablePath:process.env.QA_CHROME||"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"});
   const results=[];
   for(const mode of ["desktop","mobile"]){
-   const context=await browser.newContext(mode==="mobile"?{...devices["Pixel 7"],viewport:{width:412,height:860},colorScheme:"dark"}:{viewport:{width:1100,height:900},colorScheme:"dark"});
+   const context=await browser.newContext(mode==="mobile"?{...devices["Pixel 7"],viewport:{width:412,height:915},colorScheme:"dark"}:{viewport:{width:1280,height:915},colorScheme:"dark"});
    const page=await context.newPage(),errors=[];page.on("pageerror",e=>errors.push(e.message));
    page.on("dialog",d=>d.accept());
    await page.goto("http://127.0.0.1:18841/qa/host.html");
@@ -22,11 +22,12 @@ const assert=(v,m)=>{if(!v)throw Error(m)};
    await frame.waitForFunction(()=>document.documentElement.dataset.appearanceSource==="transport");
    const identity=await frame.evaluate(()=>window.__qaIdentity ||= crypto.randomUUID());
    await frame.getByRole("button",{name:"Connect",exact:true}).click();
-   await frame.locator("#code").filter({hasText:"ABCD-1234"}).waitFor();
+   await frame.locator("#code").filter({visible:true}).waitFor();
+   assert(await frame.locator("#code").inputValue()==="ABCD-1234","mock login code");
    for(const skin of ["nebula","signal"]){
     await page.evaluate(s=>setSkin(s),skin);
     await frame.waitForFunction(s=>document.documentElement.dataset.skin===s,skin);
-    assert(await frame.locator("#code").textContent()==="ABCD-1234","login code survives skin");
+    assert(await frame.locator("#code").inputValue()==="ABCD-1234","login code survives skin");
     const computed=await frame.evaluate(()=>({canvas:getComputedStyle(document.body).backgroundColor,accent:getComputedStyle(document.documentElement).getPropertyValue("--wz-accent").trim(),width:innerWidth,radius:getComputedStyle(document.querySelector("button")).borderRadius,identity:window.__qaIdentity}));
     assert(computed.canvas==="rgba(0, 0, 0, 0)","transparent hosted canvas");assert(computed.identity===identity,"same document");
     if(skin==="signal")assert(computed.radius==="2px","Signal square buttons");

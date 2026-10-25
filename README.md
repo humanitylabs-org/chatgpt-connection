@@ -10,8 +10,12 @@ is required. Install with an App Manager that supports source packages.
 
 ## Ownership and storage
 
-Open the page, **Connect**, open `https://auth.openai.com/codex/device`, enter the
-short code and approve. Do not paste codes, passwords or tokens into chat. The
+Open the page, **Connect**, copy the large sign-in code first, open the ChatGPT
+sign-in link in a new tab, then paste the code when ChatGPT asks for it. Finish
+signing in and come back to the waiting page; it shows **Connected** after approval.
+**Copy** confirms **Copied** only after clipboard success, with selected-code
+manual copy if the browser cannot copy automatically. Do not paste codes,
+passwords or tokens into chat. The
 public OAuth client and endpoints match stock Hermes' Codex device flow:
 `app_EMoamEEZ73f0CkXaXp7hrann`, deviceauth usercode/token, then `/oauth/token`
 with the returned authorization code/verifier and `/deviceauth/callback` redirect.

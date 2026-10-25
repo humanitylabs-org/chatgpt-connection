@@ -17,10 +17,24 @@
   <ul id="accounts" aria-live="polite"><li class="row muted">Loading…</li></ul>
   <section id="login" hidden>
     <h2>Sign in to ChatGPT</h2>
-    <ol>
-      <li><a id="login-url" href="#" target="_blank" rel="noopener noreferrer">Open the ChatGPT sign-in page</a> on your phone or computer and sign in.</li>
-      <li>Enter this code there: <strong id="code" class="code"></strong></li>
-      <li>Come back here. This page finishes by itself.</li>
+    <ol class="login-steps">
+      <li>
+        <h3>Step 1: Copy this code</h3>
+        <div class="code-row">
+          <input id="code" class="code" type="text" readonly aria-label="ChatGPT sign-in code" autocomplete="off" spellcheck="false">
+          <button type="button" id="copy-code" aria-live="polite">Copy</button>
+        </div>
+        <p id="copy-status" class="copy-status" role="status"></p>
+      </li>
+      <li>
+        <h3>Step 2: Open this link</h3>
+        <a id="login-url" class="primary login-link" href="#" target="_blank" rel="noopener noreferrer">Open ChatGPT sign-in <span aria-hidden="true">↗</span></a>
+        <p class="step-hint">Opens in a new tab.</p>
+      </li>
+      <li>
+        <h3>Step 3: Paste the code</h3>
+        <p>When ChatGPT asks for it, paste the code. Finish signing in, then come back here.</p>
+      </li>
     </ol>
     <div class="buttons"><button type="button" id="cancel">Cancel</button></div>
   </section>
