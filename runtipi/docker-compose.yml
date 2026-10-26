@@ -1,6 +1,7 @@
 # wizard-chatgpt: the main service is a small MCP front (mcp/front.py + mcp/tools.py, inlined by mcp/inline.py).
 # It serves the app's MCP at /mcp and passes every other request unchanged to wizard-chatgpt-engine,
-# the ChatGPT page and its /api/connection, which is reachable only on this app's private network.
+# the ChatGPT accounts page, its /api/accounts and /api/connection, reachable only on this app's private network.
+# Engine source: humanitylabs-org/wizard-app-store images/wizard-chatgpt (the same accounts page as Claude).
 services:
   wizard-chatgpt:
     image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
@@ -12,10 +13,10 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APP: wizard-chatgpt
-      APP_VERSION: 0.1.4
+      APP_VERSION: 0.2.4
       FRONT_PORT: "8801"
       UPSTREAM_HOST: wizard-chatgpt-engine
-      UPSTREAM_PORT: "8801"
+      UPSTREAM_PORT: "8800"
       PYTHONDONTWRITEBYTECODE: "1"
     depends_on: [wizard-chatgpt-engine]
     command:
@@ -203,8 +204,9 @@ services:
 
 
       # ---- tools for this app ----
-      # Read-only by design: connecting, switching and disconnecting are owner actions on the ChatGPT page.
-      # The MCP only reports the wizard.ai-connection/1 answer (status, account label, usage), never a token.
+      # Read-only by design: signing in, adding, reconnecting and removing subscriptions are owner actions on the
+      # ChatGPT page. The MCP only reports the wizard.ai-connection/2 answer (overall status, plan, usage and one row per
+      # subscription), never a token.
       # Box-only: a call that came through Tailscale Serve, a tunnel or a proxy is refused; agents reach this
       # MCP on the app network (http://wizard-chatgpt:8801/mcp), which adds none of these headers.
 
@@ -212,8 +214,9 @@ services:
 
 
       @tool("connection_status", "ChatGPT subscription status on this Wizard: connected / not_connected / expired / error, "
-            "the account label when known, and an error message that says what to do. usage is always null here (the app "
-            "holds no ChatGPT token); Wizard's Resources screen shows ChatGPT usage from the agent's own sign-in. "
+            "the plan, the account label, current usage limits (percent used, percent left and reset time), and `accounts`: "
+            "one row per ChatGPT subscription signed in to the agent, with its own status and usage. When the app can't "
+            "reach the agent, status is error with error.code unreachable / not_configured / login_rejected. "
             "Read-only; never returns a token.")
       def connection_status():
           if any(k in PROXY_HEADERS or k.startswith("cf-") for k in REQUEST.get()):
@@ -224,12 +227,20 @@ services:
               headers["Authorization"] = auth  # the page password (Basic), forwarded unchanged
           _, raw = http("GET", "/api/connection", None, headers, timeout=15)
           d = json.loads(raw)
+          code = (d.get("error") or {}).get("code")
           if d.get("status") == "not_connected":
-              d["next"] = ("Ask the owner to open the ChatGPT app, press Connect, open the ChatGPT link and enter the code "
-                           "shown. Never ask for the code or a token in chat.")
-          elif d.get("status") == "error":
-              d["next"] = ("Tell the owner the plain message in error.message. If the agent is the owner's own Hermes outside "
-                           "Wizard Apps, he signs in there with `hermes auth add openai-codex`.")
+              d["next"] = ("Ask the owner to open the ChatGPT app and press Sign in. ChatGPT first needs Settings -> Security -> "
+                           "Device code sign-in for Codex turned on; then he copies the code, opens the sign-in link and pastes it. "
+                           "Never ask for the code or a token in chat.")
+          elif d.get("status") == "expired":
+              d["next"] = "Ask the owner to open the ChatGPT app and press Reconnect on the expired subscription."
+          elif code in ("unreachable", "not_configured", "login_rejected"):
+              d["next"] = ("The ChatGPT app can't reach this agent's dashboard (error.message; the page shows the agent address). "
+                           "On a box where Wizard runs next to your own Hermes, run `wam alongside` and then any `wam app update ...` "
+                           "it prints (re-points the app at this agent and restarts it); otherwise `wam app update wizard-chatgpt`. "
+                           "Check again; tell the owner in plain words if it still fails.")
+          elif code == "limit":
+              d["next"] = "That subscription hit its limit; the owner can add another ChatGPT subscription with + Add in the ChatGPT app."
           return d
 
 
@@ -240,7 +251,8 @@ services:
       is_main: true
       internal_port: 8801
   wizard-chatgpt-engine:
-    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.1.4@sha256:0cb8fb715f8f06b2225b7dd93d22d84fe58d4ef218586a9f4c8009afc90462c2
+    # Built and published by wizard-app-store images/wizard-chatgpt at 254ee6f2 (wizard-app-store #32), Build ChatGPT run 40364246353.
+    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -250,11 +262,14 @@ services:
     memswap_limit: 128m
     cpus: 0.5
     environment:
-      WIZARD_CHATGPT_PORT: "8801"
+      WIZARD_CHATGPT_PORT: "8800"
+      WIZARD_POOL_PORT: "8800"
       WIZARD_CHATGPT_PASSWORD: ${WIZARD_CHATGPT_PASSWORD:-}
       WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
       WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
-      # The agent whose own ChatGPT sign-in this app drives: the Hermes Agent app's dashboard by default.
+      # The agent whose own ChatGPT sign-ins this app lists, adds, reconnects and removes (Wizard OS plugin, stock
+      # `hermes auth`): the Hermes Agent app's dashboard by default; on alongside boxes the App Manager points it at
+      # the host agent's dashboard. Tokens never leave the agent.
       WIZARD_CHATGPT_HERMES_URL: ${WIZARD_CHATGPT_HERMES_URL:-http://hermes-agent:9119}
       WIZARD_CHATGPT_HERMES_USER: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-hermes}
       WIZARD_CHATGPT_HERMES_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}

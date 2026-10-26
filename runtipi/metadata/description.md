@@ -1,26 +1,26 @@
 # ChatGPT
 
-Connect your ChatGPT subscription (Plus or Pro) to this Wizard server once. Your Hermes Agent then uses it.
+Connect your ChatGPT subscriptions (Plus or Pro) to this Wizard server. Your agent then uses them.
 
-## Connect ChatGPT
+## Sign in
 
-1. Open ChatGPT and press **Connect**.
-2. Press the link it shows and sign in to ChatGPT on your phone or computer.
-3. Enter the short code the page shows, and approve.
-4. Come back: the page finishes by itself and shows **Connected**.
+1. In ChatGPT, open **Settings → Security** and turn on **Device code sign-in for Codex** (once).
+2. Open the ChatGPT app here and press **Sign in** (or **+ Add** for another subscription).
+3. Copy the code, press **Open sign-in and paste the code**, and approve on ChatGPT.
+4. Come back: the page shows the subscription with its usage.
 
-Connecting never moves your agent off an account that already works. If your agent had none, it switches to ChatGPT; otherwise press **Use ChatGPT** when you want it. **Disconnect** signs your agent out of ChatGPT.
+If the page says it can't reach your agent, press **Retry**; if that keeps failing, ask your agent to reconnect the ChatGPT app.
 
 ## How it works
 
-- The sign-in is **your Hermes Agent's own ChatGPT login**. This app only asks the agent's dashboard to start it and shows you the code. Hermes stores and renews the ChatGPT tokens itself; this app never sees them. ChatGPT sign-ins can't be shared between programs, which is why it works this way.
-- Wizard's Resources screen shows ChatGPT as connected from this app, and your usage numbers from the agent's own sign-in.
-- Needs the **Hermes Agent** app from Wizard Apps (installed with it automatically). If your own Hermes runs on this server outside Wizard Apps, the page says it can't reach it: sign in there with `hermes auth add openai-codex`, and Wizard still shows your ChatGPT usage.
+- Each sign-in is **your agent's own ChatGPT login**. This app only asks the agent's dashboard to start it and shows you the code. The agent stores and renews the tokens itself; this app never sees them.
+- Wizard's home screen shows each subscription and how much of it is left.
+- Works with the Hermes Agent app from Wizard Apps or with your own Hermes on this server (Wizard links it).
 
 ## Privacy and access
 
-Keep this app on your private network (Tailscale). Public domain exposure is off. The status answer is box-only: requests that come through Tailscale Serve, a tunnel or a proxy are refused. On a server with a public IP, block port 8801 at the provider firewall. You can also set an optional page password at install.
+Keep this app on your private network (Tailscale). Public domain exposure is off. The status answer is box-only: requests that come through Tailscale Serve, a tunnel or a proxy are refused. You can also set an optional page password at install.
 
 ## Personal use only
 
-This is for using **your own** ChatGPT subscription on **your own** server.
+This is for using **your own** ChatGPT subscriptions on **your own** server.

@@ -1,5 +1,6 @@
-# Read-only by design: connecting, switching and disconnecting are owner actions on the ChatGPT page.
-# The MCP only reports the wizard.ai-connection/1 answer (status, account label, usage), never a token.
+# Read-only by design: signing in, adding, reconnecting and removing subscriptions are owner actions on the
+# ChatGPT page. The MCP only reports the wizard.ai-connection/2 answer (overall status, plan, usage and one row per
+# subscription), never a token.
 # Box-only: a call that came through Tailscale Serve, a tunnel or a proxy is refused; agents reach this
 # MCP on the app network (http://wizard-chatgpt:8801/mcp), which adds none of these headers.
 
@@ -7,8 +8,9 @@ PROXY_HEADERS = ("tailscale-user-login", "x-forwarded-for", "forwarded", "x-real
 
 
 @tool("connection_status", "ChatGPT subscription status on this Wizard: connected / not_connected / expired / error, "
-      "the account label when known, and an error message that says what to do. usage is always null here (the app "
-      "holds no ChatGPT token); Wizard's Resources screen shows ChatGPT usage from the agent's own sign-in. "
+      "the plan, the account label, current usage limits (percent used, percent left and reset time), and `accounts`: "
+      "one row per ChatGPT subscription signed in to the agent, with its own status and usage. When the app can't "
+      "reach the agent, status is error with error.code unreachable / not_configured / login_rejected. "
       "Read-only; never returns a token.")
 def connection_status():
     if any(k in PROXY_HEADERS or k.startswith("cf-") for k in REQUEST.get()):
@@ -19,10 +21,18 @@ def connection_status():
         headers["Authorization"] = auth  # the page password (Basic), forwarded unchanged
     _, raw = http("GET", "/api/connection", None, headers, timeout=15)
     d = json.loads(raw)
+    code = (d.get("error") or {}).get("code")
     if d.get("status") == "not_connected":
-        d["next"] = ("Ask the owner to open the ChatGPT app, press Connect, open the ChatGPT link and enter the code "
-                     "shown. Never ask for the code or a token in chat.")
-    elif d.get("status") == "error":
-        d["next"] = ("Tell the owner the plain message in error.message. If the agent is the owner's own Hermes outside "
-                     "Wizard Apps, he signs in there with `hermes auth add openai-codex`.")
+        d["next"] = ("Ask the owner to open the ChatGPT app and press Sign in. ChatGPT first needs Settings -> Security -> "
+                     "Device code sign-in for Codex turned on; then he copies the code, opens the sign-in link and pastes it. "
+                     "Never ask for the code or a token in chat.")
+    elif d.get("status") == "expired":
+        d["next"] = "Ask the owner to open the ChatGPT app and press Reconnect on the expired subscription."
+    elif code in ("unreachable", "not_configured", "login_rejected"):
+        d["next"] = ("The ChatGPT app can't reach this agent's dashboard (error.message; the page shows the agent address). "
+                     "On a box where Wizard runs next to your own Hermes, run `wam alongside` and then any `wam app update ...` "
+                     "it prints (re-points the app at this agent and restarts it); otherwise `wam app update wizard-chatgpt`. "
+                     "Check again; tell the owner in plain words if it still fails.")
+    elif code == "limit":
+        d["next"] = "That subscription hit its limit; the owner can add another ChatGPT subscription with + Add in the ChatGPT app."
     return d
