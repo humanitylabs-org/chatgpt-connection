@@ -1,5 +1,15 @@
 # ChatGPT connection — 0.3.0
 
+> **Contribution fork — upstream is canonical.** Wizard OS releases install
+> [oscarhenrycollins/chatgpt-connection](https://github.com/oscarhenrycollins/chatgpt-connection).
+> The app-owned multi-subscription port is contributed there as
+> [upstream PR #4](https://github.com/oscarhenrycollins/chatgpt-connection/pull/4),
+> rebuilt on Oscar's current code rather than this fork's older divergent main.
+> Follow upstream for release/onboarding work. Do not pin new boxes to this fork's
+> main or treat a fork-only login fix as shipped. Existing pins/data are not changed
+> by this documentation notice.
+
+
 This app owns the Codex device-code login and its rotating renewal chain. Stock
 Hermes and Connection Router clients use the app; they never receive a ChatGPT
 access or refresh token. Version 0.3.0 uses `runtime.package: source`: App Manager
