@@ -10,7 +10,7 @@ The ChatGPT app is where the owner connects his ChatGPT subscriptions (Plus or P
 
 ## What the agent must know
 
-- Sign-in is done **by the owner, on the ChatGPT app's page**: **Sign in** (or **+ Add**), copy the code,
+- Sign-in is done **by the owner, on the ChatGPT app's page**: **Connect** (or **Add account**), copy the code,
   **Open sign-in and paste the code**, approve on ChatGPT. ChatGPT refuses the code until the owner turns on
   **Settings → Security → Device code sign-in for Codex** once; the page says so first. Never ask the owner for
   a code, token or password in chat, and never try to sign in yourself.
@@ -27,7 +27,7 @@ The ChatGPT app is where the owner connects his ChatGPT subscriptions (Plus or P
   dashboard (for example after the server's private address changed). Alongside your own Hermes: run
   `wam alongside`, then any `wam app update ...` it prints (re-points the app at this agent and restarts it);
   otherwise `wam app update wizard-chatgpt`. Then check again. The page shows the same reason with a Retry button.
-- `limit`: that subscription hit its limit; the owner can add another one with **+ Add**.
+- `limit`: that subscription hit its limit; the owner can add another one with **Add account**.
 
 ## Limits
 
