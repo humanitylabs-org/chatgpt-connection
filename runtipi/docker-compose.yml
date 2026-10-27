@@ -251,7 +251,7 @@ services:
       is_main: true
       internal_port: 8801
   data-init:
-    image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.5@sha256:d0ae481a924bef58978ba382e10e65e1e558d6a98a1830841e9d6242d94a09e9
     user: "0:0"
     restart: "no"
     network_mode: none
@@ -266,13 +266,13 @@ services:
       - |
         import os
         from pathlib import Path
-        for p in (Path('/data'), Path('/data/claude')):
+        for p in (Path('/data'),):
             p.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chown(p, 1000, 1000)
             os.chmod(p, 0o700)
   wizard-chatgpt-engine:
     # Built and published by wizard-app-store images/wizard-chatgpt at 254ee6f2 (wizard-app-store #32), Build ChatGPT run 40364246353.
-    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.4@sha256:1c90102e819574b4c5e0c50f782b3f7cd0e998b53415407471bf59dabca27418
+    image: ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.5@sha256:d0ae481a924bef58978ba382e10e65e1e558d6a98a1830841e9d6242d94a09e9
     command: ["python3", "/app/pool_server.py"]
     user: "1000:1000"
     read_only: true

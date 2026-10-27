@@ -61,17 +61,38 @@ def email_hash(email):
     return hashlib.sha256(email.encode()).hexdigest()[:16] if '@' in email else None
 
 
-def same_account(row, email):
+def reports_hashes(result):
+    """Whether the agent's plugin reports `emailHash` (Agent Service #196 and later). It says so in `identity`
+    (#203); a plugin between those two shows it by hashing at least one row."""
+    return bool((result.get('identity') or {}).get('emailHash')) or any(a.get('emailHash') for a in result.get('accounts') or [])
+
+
+def same_account(row, email, exact=False):
     """Whether an agent pool row is the same Claude account as the original sign-in. Exact when the plugin reports an
-    email hash; otherwise, on an alongside box only (where that original sign-in is not what the agent uses), the
-    masked email must match too."""
+    email hash. Only an older plugin, which never reports one (`exact` False), falls back to the masked email, and only
+    on an alongside box (where that original sign-in is not what the agent uses). With a current plugin a row without a
+    hash is an unattested account: it stays its own row, since `h***@e***` is both heidi@ and hank@."""
     if not email:
         return False
     if row.get('emailHash'):
         return hmac.compare_digest(str(row['emailHash']), email_hash(email) or '')
+    if exact:
+        return False
     return alongside(PROVIDER) and bool(masked(email)) and row.get('email') == masked(email)
 
 
+GENERIC_NAME = re.compile(r'^(?:openai-codex|anthropic|claude|chatgpt)-oauth(?:-\d+)?$|^(?:device_code|claude_code)$')
+
+
+def friendly_names(accounts, brand):
+    """Hermes names a sign-in without an email claim `openai-codex-oauth-1`; Home shows the account name whenever the
+    email is masked, so it read that label. Such rows become 'ChatGPT', 'ChatGPT 2', ... by position; an owner's own
+    nickname is kept."""
+    for n, account in enumerate(accounts, 1):
+        name = str(account.get('name') or '')
+        if not name or GENERIC_NAME.match(name):
+            account['name'] = brand if n == 1 else '%s %d' % (brand, n)
+    return accounts
 def unavailable(error):
     return {'provider': PROVIDER, 'owner': 'app', 'accounts': [],
         'inventoryStatus': 'unavailable', 'actions': {'add': False},
@@ -83,6 +104,7 @@ def with_legacy(result):
     # The old singleton is adopted in place by the app owner, not mirrored from Hermes.
     result['legacySignin'] = False
     result['accountCount'] = len(result['accounts'])
+    result['accounts'] = friendly_names(result['accounts'], 'Claude' if PROVIDER == 'claude' else 'ChatGPT')
     return result
 
 def connection(result):
@@ -101,6 +123,9 @@ def connection(result):
         error = {'code': 'provider_error', 'message': 'Subscription state is unavailable.'}
     elif status == 'expired' and not isinstance(error, dict):
         error = {'code': 'expired', 'message': 'Subscription sign-in expired; reconnect it in the app.'}
+    if isinstance(rows, list):
+        rows = friendly_names([dict(a) for a in rows], 'Claude' if PROVIDER == 'claude' else 'ChatGPT')
+        result = {**result, 'accounts': rows}
     answer = {**result, 'contract': 'wizard.ai-connection/2', 'status': status,
               'plan': selected.get('plan'), 'usage': selected.get('usage'),
               'account': selected.get('email') or selected.get('account'), 'error': error}
@@ -232,7 +257,9 @@ class Handler(owner.Handler):
             if path == '/api/connection':
                 result = connection(result)
             return self.send(200, result)
-        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/app.css': ('app.css', 'text/css; charset=utf-8'), '/boot.js': ('boot.js', 'text/javascript; charset=utf-8'), '/theme-client.js': ('theme-client.js', 'text/javascript; charset=utf-8'), '/wizard-ui.css': ('wizard-ui.css', 'text/css; charset=utf-8')}
+        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/app.css': ('app.css', 'text/css; charset=utf-8'), '/boot.js': ('boot.js', 'text/javascript; charset=utf-8'), '/theme-client.js': ('theme-client.js', 'text/javascript; charset=utf-8'), '/wizard-ui.css': ('wizard-ui.css', 'text/css; charset=utf-8'),
+                  '/wizard-tokens.css': ('wizard-tokens.css', 'text/css; charset=utf-8'), '/wizard-layout.css': ('wizard-layout.css', 'text/css; charset=utf-8'), '/wizard-sheet.js': ('wizard-sheet.js', 'text/javascript; charset=utf-8'),
+                  '/logo-claude.svg': ('logo-claude.svg', 'image/svg+xml'), '/logo-chatgpt.svg': ('logo-chatgpt.svg', 'image/svg+xml')}
         if path in assets:
             name, ctype = assets[path]
             return self.send(200, (ROOT / name).read_bytes(), ctype)

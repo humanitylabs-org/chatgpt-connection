@@ -5,7 +5,7 @@ Connect your ChatGPT subscriptions (Plus or Pro) to this Wizard server. Your age
 ## Sign in
 
 1. In ChatGPT, open **Settings → Security** and turn on **Device code sign-in for Codex** (once).
-2. Open the ChatGPT app here and press **Sign in** (or **+ Add** for another subscription).
+2. Open the ChatGPT app here and press **Connect** (or **Add account** for another subscription).
 3. Copy the code, press **Open sign-in and paste the code**, and approve on ChatGPT.
 4. Come back: the page shows the subscription with its usage.
 
