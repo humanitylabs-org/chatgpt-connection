@@ -28,6 +28,73 @@ Do not silently copy or delete agent credential pools. Stop callers and the old 
 
 WAM must preserve existing share grants (draft #215 is relevant but not sufficient proof), recognize app-owned declarations before applying alongside host-login overrides, and compile consumer share mounts. Hermes' Claude consumer needs directory-inventory selection/rotation; ChatGPT needs app-labelled local-bearer registration without changing the current model or redirecting other Codex credentials. The old dashboard broker must not remain onboarding's credential owner.
 
+## Explicit offline handover now provided
+
+`handover.py` implements the stopped-owner operation above. It is **not** an
+implicit install hook, a live-agent credential copier, or a profile/global-root
+migration. First stop every agent/profile, CLI and connection-app process that
+could use these subscriptions; a flag/advisory lock cannot revoke an in-memory
+token. Keep both sides stopped until the command succeeds. Run with the same
+filesystem permissions as the app data owner:
+
+```sh
+python3 handover.py --hermes-home /path/to/stopped/hermes-home \
+  --app-data /path/to/connection/private-data --owners-stopped
+```
+
+For Claude, `--app-data` is the exported `data/claude` directory (the engine's
+`/claude`); for ChatGPT it is `data` (the engine's `/data`). Use explicit paths,
+not a guessed running agent home. Start/stop an existing app once first if it
+still has an unindexed legacy singleton. Do not point this command at an owner
+installation as an exploratory test.
+
+Supported stock shapes are `auth.json` OAuth `credential_pool.anthropic` and
+`credential_pool.openai-codex`, the Codex `providers.openai-codex.tokens`
+singleton, and Hermes's native `.anthropic_oauth.json` PKCE singleton. Alias
+copies of one token pair become one row, including Codex pool aliases whose
+expiry is recorded only in the singleton. Account labels, unrelated providers,
+API-key rows, existing app inventory and model configuration are preserved.
+Borrowed CLI sources, conflicting existing app chains, missing renewable
+credentials, malformed data or divergent copies of one refresh chain fail
+closed. External CLI/keychain/env logins and cross-profile/root sharing need
+separate explicit retirement/re-sign-in; this command does not access them.
+
+The command stages private app files, verifies them, writes the inventory and
+retires the agent's pool/singleton aliases under a mode-0600 undo journal.
+Writes use temp-file fsync, atomic replacement, directory fsync and readback.
+An exception restores the original agent credentials and app inventory; a
+second successful invocation is a no-op. On interruption, **do not start either
+owner**: rerun the command with the same paths to restore then retry. The
+`.handover-undo.json` is temporarily credential-bearing, remains private and
+must never be attached to a report. Delete no journal manually to bypass a
+failed recovery. A successful handover leaves no journal or credential backup.
+Consumer mount/local-bearer registration is still a separate granted setup
+step; migration alone never declares the agent connected.
+
+## Renewal behavior and regression scope
+
+Claude retains the official CLI as its only token refresher, including the
+CLI's credential-file locking. A page status poll schedules its renewal turn
+within 120 seconds of expiry; app inference waits for that renewal instead of
+rejecting the credential before the CLI can refresh it. Failed renewal exposes
+Reconnect, never a false connected result. There is a completion-based
+10-minute attempt cooldown; this is demand-driven renewal, not an idle daemon.
+The one-word Haiku renewal can consume subscription usage. ChatGPT's existing
+app-owned `Connection.access()` refreshes on usage/inference access within
+120 seconds of expiry, persists the rotated pair before returning, and clears
+a rejected `invalid_grant` to `expired` with an immediate re-sign-in path.
+
+`TMPDIR=/tmp/aol python3 test-renewal.py` exercises the owner-requested
+regressions **existing logins move into the app without lockout** and
+**expiring login refreshes without the owner**, plus interrupted recovery,
+PKCE/singleton aliases, multiple rows, duplicate-chain refusal and page-driven
+renewal. Tokens and HTTP OAuth endpoints are synthetic. The Claude renewal CLI
+is also a labelled stand-in: this proves app orchestration and persistence,
+not the official CLI's real account/issuer behavior. A real subscription's
+refresh rotation, rejection and re-login remain unproven until tested with a
+separately authorized disposable account. No real credentials are required by
+these tests.
+
 ## Acceptance and evidence boundaries
 
 Use forum, native Linux amd64, disposable app-data and synthetic providers only. Exercise real source-package startup, two accounts, restart/readback, renewal/exhaustion, expired/reconnect, removal, denied/cross-site requests and missing consumer. A fake provider or CLI is a contract test, not a real paid-subscription proof. Live provider login/refresh is an owner-only gate if no authorized synthetic account exists. Never read James's credentials, deploy to his box, change release pins, or mark draft #215 ready without its migration/grant proof.
