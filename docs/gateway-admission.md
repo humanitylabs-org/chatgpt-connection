@@ -107,8 +107,10 @@ installed WAM `app_update` path has no universal ingress fence or inference
 drain. Restarting this shared gateway cuts active streams; the Agent Service
 keeper only protects its client-to-agent stream, not the inference transport.
 The shipped front has no drain endpoint; the live engine uses a semaphore with
-no active/waiting counters and has no graceful signal handler. Container stop
-grace alone is not an application drain. Native `/v1` and helper `/api/infer`
+no active/waiting counters. SIGTERM shuts down its accept loop, but request
+threads are daemonized and are not joined before process exit; this is not an
+active-request drain. Container stop grace alone is not an application drain.
+Native `/v1` and helper `/api/infer`
 can reach the app on the shared Docker network, so gating only the host-loopback
 front or UI would leave bypasses. No safe zero-interruption activation route is
 established by these mechanisms.
