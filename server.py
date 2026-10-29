@@ -9,8 +9,10 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import socketserver
+from collections import deque
 import sys
 import threading
 import time
@@ -39,7 +41,72 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
 ORIGIN_PATTERN = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 FRAME_ANCESTORS = " ".join(["'self'"] + [o for o in (x.strip().rstrip("/") for x in os.environ.get("WIZARD_TRUSTED_ORIGINS", "").split(",")) if ORIGIN_PATTERN.match(o)])
 OWNER = None
-GATEWAY_SLOTS = threading.BoundedSemaphore(8)
+# Admission is shared by native replies, helpers, compaction, models and quota.
+# Keep the existing upstream ceiling; absorb short bursts, not unlimited work.
+GATEWAY_WAIT_SECONDS = 15.0
+GATEWAY_GET_WAIT_SECONDS = 2.0
+
+
+class GatewayAdmission:
+    def __init__(self, capacity=8, max_waiters=32):
+        self.capacity, self.max_waiters = capacity, max_waiters
+        self.condition = threading.Condition()
+        self.waiters = deque()
+        self.active = self.rejected = self.cancelled = 0
+
+    def acquire(self, deadline, disconnected):
+        """Return None with one permit, or a local refusal reason. Never dispatch.
+
+        Tickets and active count change under one lock. Only the head can acquire;
+        timeout/cancellation removes its ticket and wakes the next caller.
+        """
+        with self.condition:
+            if disconnected():
+                self.cancelled += 1
+                return "cancelled"
+            if time.monotonic() >= deadline:
+                self.rejected += 1
+                return "deadline"
+            if not self.waiters and self.active < self.capacity:
+                self.active += 1
+                return None
+            if len(self.waiters) >= self.max_waiters:
+                self.rejected += 1
+                return "queue_full"
+            ticket = object()
+            self.waiters.append(ticket)
+            try:
+                while True:
+                    if disconnected():
+                        self.cancelled += 1
+                        return "cancelled"
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self.rejected += 1
+                        return "deadline"
+                    if self.waiters[0] is ticket and self.active < self.capacity:
+                        self.active += 1
+                        return None
+                    self.condition.wait(min(.1, remaining))
+            finally:
+                self.waiters.remove(ticket)
+                self.condition.notify_all()
+
+    def release(self):
+        with self.condition:
+            if self.active <= 0:
+                raise ValueError("Gateway permit released twice.")
+            self.active -= 1
+            self.condition.notify_all()
+
+    def snapshot(self):
+        with self.condition:
+            return {"active": self.active, "waiting": len(self.waiters),
+                    "rejected": self.rejected, "cancelled": self.cancelled,
+                    "capacity": self.capacity, "max_waiters": self.max_waiters}
+
+
+GATEWAY_SLOTS = GatewayAdmission()
 INIT_LOCK = threading.Lock()
 REGISTRATION_LOCK = threading.RLock()
 
@@ -274,8 +341,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # no query strings, headers, request bodies or upstream exception text in logs
 
-    def send(self, code, body, kind="application/json"):
+    def send(self, code, body, kind="application/json", headers=None):
         self.send_response(code)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         for k, v in {"Content-Type": kind, "Content-Length": str(len(body)), "Cache-Control": "no-store",
                      "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Connection": "close",
                      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors " + FRAME_ANCESTORS + "; base-uri 'none'; form-action 'none'"}.items():
@@ -311,7 +380,21 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return False
 
+    def gateway_disconnected(self):
+        # The source package runs on Linux. RDHUP detects FIN even when the POST
+        # body is still unread (MSG_PEEK would see that body instead of EOF).
+        # The MCP byte-pipe closes this socket when the original caller leaves.
+        poll = select.poll()
+        poll.register(self.connection, select.POLLHUP | select.POLLERR | select.POLLNVAL | select.POLLRDHUP)
+        return bool(poll.poll(0))
+
+    def gateway_busy(self, reason):
+        return self.send(429, json.dumps({"error": {"code": "gateway_busy", "type": "local_capacity",
+                         "message": "Local ChatGPT gateway is busy; no request was sent upstream.",
+                         "detail": reason}}).encode(), headers={"Retry-After": "1"})
+
     def gateway(self, path):
+        admitted_at = time.monotonic()
         if not box_only(self.headers):
             return self.json(403, {"error": "Box-only endpoint."})
         given = self.headers.get("Authorization", "")
@@ -320,18 +403,39 @@ class Handler(BaseHTTPRequestHandler):
         routes = GET_GATEWAY if self.command in ("GET", "HEAD") else POST_GATEWAY
         if path not in routes:
             return self.json(404, {"error": "Unsupported gateway route."})
-        if not GATEWAY_SLOTS.acquire(blocking=False):
-            return self.json(429, {"error": "Gateway capacity busy."})
-        started = False
+        wait = GATEWAY_GET_WAIT_SECONDS if self.command in ("GET", "HEAD") else GATEWAY_WAIT_SECONDS
+        # OpenAI SDK callers advertise their timeout in seconds. Leave headroom
+        # for a truthful local refusal before that caller abandons the socket.
         try:
+            advertised = float(self.headers.get("X-Stainless-Timeout", "inf"))
+            if advertised >= 0:
+                wait = min(wait, max(0, advertised - .25))
+        except ValueError:
+            pass
+        dispatch_by = admitted_at + wait
+        refusal = GATEWAY_SLOTS.acquire(dispatch_by, self.gateway_disconnected)
+        if refusal == "cancelled":
+            self.close_connection = True
+            return
+        if refusal:
+            return self.gateway_busy(refusal)
+        started = dispatched = False
+        try:
+            self.connection.settimeout(min(120, max(.01, dispatch_by - time.monotonic())))
+            body = inference.body(self, 16 * 1024 * 1024, deadline=dispatch_by) if self.command == "POST" else None
             self.connection.settimeout(120)
-            body = inference.body(self, 16 * 1024 * 1024) if self.command == "POST" else None
             if path == "/v1/responses":
                 assert body is not None
                 body.update(store=False, stream=True, instructions=body.get("instructions") or "You are a helpful assistant.")
                 for k in ("max_output_tokens", "max_tokens", "temperature", "top_p", "frequency_penalty", "presence_penalty", "truncation"):
                     body.pop(k, None)
             extra = {k: self.headers[k] for k in ("session_id", "x-client-request-id") if self.headers.get(k)}
+            if self.gateway_disconnected():
+                self.close_connection = True
+                return
+            if time.monotonic() >= dispatch_by:
+                return self.gateway_busy("deadline")
+            dispatched = True
             with owner().open(self.command if self.command != "HEAD" else "GET", routes[path], body, extra) as r:
                 if path == "/v1/models":
                     data = json.loads(r.read(codex.MAX_JSON))
@@ -375,6 +479,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.wfile.write(("event: error\ndata: " + json.dumps({"type": "error", "code": e.code, "message": str(e)}) + "\n\n").encode())
                 self.wfile.flush()
+        except TimeoutError:
+            if not started:
+                if not dispatched:
+                    self.gateway_busy("deadline")
+                else:
+                    self.json(502, {"error": "ChatGPT gateway unavailable."})
         except (OSError, ValueError):
             if not started:
                 self.json(502, {"error": "ChatGPT gateway unavailable."})
@@ -391,7 +501,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized(path):
             return
         if path == "/health":
-            return self.json(200, {"status": "ok", "version": VERSION})
+            return self.json(200, {"status": "ok", "version": VERSION, "gateway": GATEWAY_SLOTS.snapshot()})
         if path == "/api/connection":
             if not box_only(self.headers):
                 return self.json(403, {"error": "box-only endpoint"})

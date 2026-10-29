@@ -60,7 +60,9 @@ class PackageTests(unittest.TestCase):
                         if proc.poll() is not None or time.monotonic() > deadline:
                             self.fail("source engine did not become healthy")
                         time.sleep(0.02)
-                self.assertEqual(health, {"status": "ok", "version": VERSION})
+                self.assertEqual({k: health[k] for k in ("status", "version")}, {"status": "ok", "version": VERSION})
+                self.assertEqual(health["gateway"], {"active": 0, "waiting": 0, "rejected": 0, "cancelled": 0,
+                                                     "capacity": 8, "max_waiters": 32})
                 with urlopen(base + "/api/connection", timeout=2) as reply:
                     self.assertEqual(json.load(reply)["status"], "not_connected")
                 with urlopen(base + "/", timeout=2) as reply:
