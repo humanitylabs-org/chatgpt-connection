@@ -14,6 +14,7 @@ import importlib.util
 from pathlib import Path
 import socket
 import struct
+import tempfile
 import threading
 import time
 import unittest
@@ -123,6 +124,11 @@ class Upstream(BaseHTTPRequestHandler):
             state.maximum = max(state.maximum, state.active)
             state.condition.notify_all()
         try:
+            if name.startswith("auth-retry") and sum(r[0] == name for r in state.requests) == 1:
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if name.startswith("fail"):
                 self.send_response(503)
                 self.send_header("Content-Length", "0")
@@ -169,10 +175,12 @@ class SyntheticOwner:
     def gateway_token(self):
         return TOKEN
 
-    def open(self, method, path, body=None, extra=None):
+    def open(self, method, path, body=None, extra=None, *, pre_dispatch=None):
         req = Request(self.base + path, method=method,
                       data=None if body is None else json.dumps(body).encode(),
                       headers=extra or {})
+        if pre_dispatch is not None:
+            pre_dispatch(False)
         try:
             return urlopen(req, timeout=5)
         except HTTPError as exc:
@@ -188,6 +196,7 @@ class GatewayAdmissionTests(unittest.TestCase):
         backend.state = self.state
         self.backend = serving(backend)
         upstream = self.backend.__enter__()
+        self.upstream_base = "http://127.0.0.1:" + str(upstream)
         settings = {"OWNER": SyntheticOwner(upstream), "PASSWORD": "", "HERMES_PASSWORD": ""}
         # Leave the historical semaphore intact for the negative baseline run.
         if hasattr(server, "GatewayAdmission"):
@@ -407,6 +416,102 @@ class GatewayAdmissionTests(unittest.TestCase):
         self.assertEqual(headers["Retry-After"], "1")
         self.state.release_all()
         self.assertNotIn("quota-expired", self.arrivals())
+
+    def real_access_barrier_case(self, mode, retry=False):
+        """Real Connection.open/access/persist; only OAuth reply is synthetic.
+
+        Hold a refresh after the handler's early check, expire/disconnect the
+        caller, finish the rotation, and observe actual loopback backend sends.
+        """
+        entered, release = threading.Event(), threading.Event()
+        name = "auth-retry-" + mode if retry else "access-" + mode
+        self.state.release_all()
+        handlers = []
+        disconnected = server.Handler.gateway_disconnected
+
+        def observe(handler):
+            handlers.append(handler)
+            return disconnected(handler)
+
+        with tempfile.TemporaryDirectory() as data:
+            conn = codex.Connection(data, backend=self.upstream_base)
+            conn.atomic("gateway-token.json", {"token": TOKEN})
+            conn.atomic("connection.json", {"status": "connected", "access_token": "synthetic-old",
+                        "refresh_token": "synthetic-refresh", "expires_at": time.time() + (3600 if retry else -1)})
+
+            def refresh(url, body=None, *, form=False):
+                assert body is not None
+                self.assertTrue(url.endswith("/oauth/token"))
+                self.assertTrue(form)
+                self.assertEqual(body["refresh_token"], "synthetic-refresh")
+                entered.set()
+                self.assertTrue(release.wait(3), "refresh barrier was not released")
+                return {"access_token": "synthetic-new", "refresh_token": "synthetic-rotated", "expires_in": 3600}
+
+            with patch.object(conn, "json_request", side_effect=refresh) as oauth, \
+                 patch.object(server, "OWNER", conn), \
+                 patch.object(server, "GATEWAY_WAIT_SECONDS", 15 if mode == "success" else .15), \
+                 patch.object(server.Handler, "gateway_disconnected", observe):
+                sock = None
+                try:
+                    if mode == "cancelled":
+                        sock = self.raw_request(name)
+                    else:
+                        future = self.pool.submit(self.request, name)
+                    self.assertTrue(entered.wait(2), "request never reached real access refresh")
+                    self.assertEqual(self.arrivals(), [name] if retry else [])
+                    if mode == "cancelled":
+                        assert sock is not None
+                        sock.shutdown(socket.SHUT_RDWR)
+                        sock.close()
+                        self.until(lambda: handlers and disconnected(handlers[-1]), "FIN not visible at real handler")
+                    elif mode == "deadline":
+                        threading.Event().wait(.2)  # strictly beyond the .15 dispatch budget
+                    release.set()
+                    self.until(lambda: server.GATEWAY_SLOTS.snapshot()["active"] == 0, "access barrier leaked permit")
+                    expected = (2 if retry else 1) if mode == "success" else (1 if retry else 0)
+                    self.assertEqual(self.arrivals(), [name] * expected, "stale caller dispatched after access")
+                    if mode != "cancelled":
+                        code, raw, headers = future.result(3)
+                        if mode == "success":
+                            self.assertEqual(code, 200)
+                            self.assertIn(b"response.completed", raw)
+                        elif retry:
+                            self.assertEqual(code, 502)
+                            self.assertEqual(json.loads(raw)["error"]["code"], "gateway_retry_stopped")
+                            self.assertNotIn(b"no request was sent upstream", raw)
+                            self.assertNotIn("Retry-After", headers)
+                        else:
+                            self.assertEqual(code, 429)
+                            self.assertEqual(json.loads(raw)["error"]["detail"], "deadline")
+                            self.assertIn(b"no request was sent upstream", raw)
+                            self.assertEqual(headers["Retry-After"], "1")
+                    self.assertEqual(oauth.call_count, 1)
+                    # A stopped dispatch must not discard or replay a completed token rotation.
+                    self.assertEqual(conn.stored()["refresh_token"], "synthetic-rotated")
+                    self.assertEqual(conn.stored()["status"], "connected")
+                    self.assertIsNone(conn.unsaved)
+                finally:
+                    release.set()
+                    if sock is not None:
+                        sock.close()
+                    # Finish the real access before closing/removing its synthetic app-data.
+                    self.until(lambda: server.GATEWAY_SLOTS.snapshot()["active"] == 0, "fixture did not settle")
+
+    def test_real_access_deadline_prevents_first_backend_send(self):
+        self.real_access_barrier_case("deadline")
+
+    def test_real_access_disconnect_prevents_first_backend_send(self):
+        self.real_access_barrier_case("cancelled")
+
+    def test_real_access_401_retry_deadline_never_claims_no_attempt(self):
+        self.real_access_barrier_case("deadline", retry=True)
+
+    def test_real_access_401_retry_disconnect_prevents_second_backend_send(self):
+        self.real_access_barrier_case("cancelled", retry=True)
+
+    def test_real_access_401_retry_with_live_caller_still_succeeds(self):
+        self.real_access_barrier_case("success", retry=True)
 
     def test_models_quota_compaction_and_security_limits_unchanged(self):
         self.state.release_all()

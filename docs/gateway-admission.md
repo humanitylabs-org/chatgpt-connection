@@ -22,8 +22,10 @@ reconcile the live source again: another release may have landed during QA.
 - Admission plus body upload has one absolute dispatch deadline measured from
   gateway entry: 15 seconds for POST; 2 seconds for GET/HEAD. The SDK's
   `X-Stainless-Timeout` can shorten this, with 0.25 seconds of headroom; it cannot
-  increase the cap. Deadline expiry is checked before taking a permit and again
-  immediately before calling the account owner's upstream method. Body reads use
+  increase the cap. Deadline expiry is checked before taking a permit, after
+  body upload, and inside the real account owner's `Connection.open`: **after**
+  `access()` (including lock waits, refresh and refresh persistence), immediately
+  before **each** backend send, including a 401 retry. Body reads use
   the remaining budget, not a timeout reset by each arriving chunk.
 - These are **dispatch/admission** deadlines, not a newly shortened generation
   limit. Existing 120-second upstream I/O and 600-second stream/size limits stay
@@ -36,7 +38,7 @@ reconcile the live source again: another release may have landed during QA.
 - Linux `poll(POLLRDHUP|POLLHUP|POLLERR|POLLNVAL)` detects a cancelled waiter even
   with unread POST data. FIN/half-close is treated as cancellation, as is reset.
   The shipped front propagates client close to the engine connection. A final
-  check happens immediately before dispatch. As with any socket check, a close
+  check happens after account access immediately before dispatch/retry. As with any socket check, a close
   racing *after* dispatch is handled by the existing streaming cleanup, not by
   an assertion that an already-started upstream request never existed.
 - Full queue or dispatch-deadline expiry returns HTTP 429 with the existing
@@ -44,7 +46,12 @@ reconcile the live source again: another release may have landed during QA.
   `type: local_capacity`, distinct `detail: queue_full|deadline`, and
   `Retry-After: 1`. It explicitly says no request was sent upstream; it is not an
   OpenAI quota or login error. Failures after upstream dispatch never use that
-  local-busy message.
+  local-busy message. If the first backend attempt returned 401 and refreshing
+  consumed the remaining deadline, no retry is sent; the response is HTTP 502
+  `gateway_retry_stopped` and explicitly says an attempt already occurred (not
+  a local-capacity 429 or a claim that nothing was sent). A disconnected caller
+  is closed silently. Completed token rotations are persisted even when the
+  caller expires or disconnects; a guard never interrupts refresh persistence.
 - Every admitted request releases in `finally`, including upstream failure,
   malformed/oversized body, streaming error and client disconnect. Timeout or
   cancellation removes the ticket and notifies the next caller.
@@ -60,29 +67,59 @@ replay failed turns or silently change a model/account.
 ## Offline acceptance
 
 `python3 -m unittest discover -v -p 'test_gateway*.py'` is included in normal CI.
-Ten regressions use the real HTTP handler and loopback synthetic upstream:
+Fifteen regressions use the real HTTP handler and loopback synthetic upstream:
 8 held SSE streams; FIFO ninth/tenth single dispatch; cap never exceeds eight;
 32 waiting and the next rejected; advertised deadline with no stale dispatch;
 FIN/reset with unread queued body; cancellation through the shipped front;
 absolute slow-upload deadline; upstream and started-stream failure cleanup;
 active-client reset and repeated leak-free waves; models/quota/compaction;
-security/body-size checks before upstream.
+security/body-size checks before upstream. Five exercise the **real**
+`Connection.open/access` with a synthetic OAuth-refresh barrier: deadline and
+disconnect before the first send (zero backend calls), both during 401 refresh
+(exactly one failed backend attempt and no second send), and a live-caller 401
+retry that succeeds. They verify completed refreshes remain saved and the
+gateway permit is released. The other transport fixture alone cannot prove
+this account-access boundary.
 
 The forum runner `tools/verify-gateway-admission.py` checks full source identity
 and clean trees, runs the new FIFO regression against the unchanged live base
 and requires the **specific observable assertion failure**, runs current CI
 entrypoints and ordinary repository-wide discovery, repeats the new suite, and
-writes phase logs, hashes and `receipt.json`. Discovery must run all ten new
+writes phase logs, hashes and `receipt.json`. Discovery must run all fifteen
 regressions, not zero tests. The baseline is copied into disposable evidence;
 its staged checkout remains unchanged. Only the coordinator submits the durable
 forum light-lane job. Syntax checks on the VPS do not count as concurrency proof.
 
+The revision runner `tools/verify-gateway-admission-r2.py` binds candidate and
+previous source (`4742b662af5bd0cc0bbde1d5736424b86c3ada9e`) plus the previous
+manifest/receipt/log hashes. It first runs the five real-access regressions,
+requires all four cancellation/expiry assertions to fail on that previous
+candidate, reruns ordinary discovery and affected ChatGPT/inference/package
+suites, and repeats the focused five. Only the hash-bound historical live-base
+FIFO negative and unchanged MCP inline check are inherited; affected tests are
+not claimed from the older result.
+
 ## Promotion and rollback (not performed by this repair)
 
 Independent read-only review and real test evidence precede activation. The
-coordinator must coordinate an idle-safe drain of all callers: restarting this
-shared inference gateway cuts active streams; the Agent Service keeper does not
-protect it. Do not add an unrelated owner-approval gate to this authorized fix.
+coordinator must not confuse an idle observation with a fenced drain. The
+installed WAM `app_update` path has no universal ingress fence or inference
+drain. Restarting this shared gateway cuts active streams; the Agent Service
+keeper only protects its client-to-agent stream, not the inference transport.
+The shipped front has no drain endpoint; the live engine uses a semaphore with
+no active/waiting counters and has no graceful signal handler. Container stop
+grace alone is not an application drain. Native `/v1` and helper `/api/infer`
+can reach the app on the shared Docker network, so gating only the host-loopback
+front or UI would leave bypasses. No safe zero-interruption activation route is
+established by these mechanisms.
+
+Until an existing complete fence is independently demonstrated, the minimal
+timing gate is an owner-agreed brief maintenance window: finish current replies
+and avoid new ChatGPT-backed work during the update. Autonomous callers could
+still arrive; any request in the replace interval can fail, and already active
+replies can be interrupted and need an explicit retry. Do not promise replay,
+silently change models/accounts, or invent firewall orchestration. This is a
+timing decision for activation, not new approval to make the authorized repair.
 
 Use the already installed WAM source-pin resolver followed by its App Manager
 `app_update` integration, **not** a raw Docker restart or unpinned `main` update.

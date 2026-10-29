@@ -334,6 +334,12 @@ def box_only(headers):
     return not any(browser_or_proxy(k) for k in headers)
 
 
+class GatewayDispatchStopped(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "wizard-chatgpt"
     sys_version = ""
@@ -435,8 +441,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if time.monotonic() >= dispatch_by:
                 return self.gateway_busy("deadline")
-            dispatched = True
-            with owner().open(self.command if self.command != "HEAD" else "GET", routes[path], body, extra) as r:
+
+            def pre_dispatch(attempted):
+                nonlocal dispatched
+                dispatched = dispatched or attempted
+                if self.gateway_disconnected():
+                    raise GatewayDispatchStopped("cancelled")
+                if time.monotonic() >= dispatch_by:
+                    raise GatewayDispatchStopped("deadline")
+                dispatched = True  # conservative: send may start immediately
+
+            with owner().open(self.command if self.command != "HEAD" else "GET", routes[path], body, extra,
+                              pre_dispatch=pre_dispatch) as r:
                 if path == "/v1/models":
                     data = json.loads(r.read(codex.MAX_JSON))
                     rows = [m for m in data.get("models", []) if isinstance(m, dict) and m.get("slug")]
@@ -473,6 +489,14 @@ class Handler(BaseHTTPRequestHandler):
                             raise codex.Fault("limit", "ChatGPT stream exceeded its limit.", 429)
                         self.wfile.write(line)
                         self.wfile.flush()
+        except GatewayDispatchStopped as e:
+            if e.reason == "cancelled":
+                self.close_connection = True
+            elif not dispatched:
+                self.gateway_busy("deadline")
+            else:
+                self.json(502, {"error": {"code": "gateway_retry_stopped",
+                          "message": "ChatGPT request was already attempted; dispatch deadline expired before retry."}})
         except (codex.Fault, inference.Fault) as e:
             if not started:
                 self.json(e.status, {"error": {"code": e.code, "message": str(e)}})

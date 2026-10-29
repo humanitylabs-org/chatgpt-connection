@@ -245,7 +245,13 @@ class Connection:
             finally:
                 os.close(fd)
 
-    def open(self, method, path, body=None, extra=None):
+    def open(self, method, path, body=None, extra=None, *, pre_dispatch=None):
+        """Optionally revalidate the caller after access, before every backend send.
+
+        The guard receives whether a backend send was already attempted (401
+        retry). It must not interrupt refresh/persistence halfway through access.
+        Non-gateway callers retain the existing transport behavior.
+        """
         access = self.access()
         for attempt in range(2):
             auth = claims(access).get("https://api.openai.com/auth", {})
@@ -261,6 +267,10 @@ class Connection:
             if body is not None:
                 headers["Content-Type"] = "application/json"
             req = Request(self.backend + path, data=None if body is None else json.dumps(body).encode(), method=method, headers=headers)
+            # Outside the transport exception handler: a caller's guard refusal
+            # is not a network failure and must never enter the auth retry path.
+            if pre_dispatch is not None:
+                pre_dispatch(attempt > 0)
             try:
                 return self.opener.open(req, timeout=120)
             except HTTPError as e:

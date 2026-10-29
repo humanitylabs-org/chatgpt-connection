@@ -74,7 +74,7 @@ def main():
         else:
             assert result.returncode == 0, name + " failed; read phase log"
             if name.startswith("gateway-"):
-                assert row["tests"] == 10, "gateway discovery must run all ten regressions"
+                assert row["tests"] == 15, "gateway discovery must run all fifteen regressions"
             elif name in {"package", "chatgpt", "inference", "all-discovery"}:
                 assert row["tests"] and row["tests"] > 0, "test phase discovered no tests"
         print(json.dumps(row), flush=True)
