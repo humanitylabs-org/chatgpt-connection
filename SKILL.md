@@ -29,7 +29,15 @@ Never ask for passwords, device codes or tokens in chat.
   `done` must name the effective approved model; provisional text is not success.
   Never work around an error by switching model, identity or account.
 - Gateway requests require the box-local bearer; browser/forwarded headers are
-  refused even with it. Router grants are report-only unless enforced: keep all
+  refused even with it. The gateway runs at most eight upstream requests, with
+  a bounded FIFO for short bursts. A `gateway_busy` / `local_capacity` 429 is
+  local admission pressure, not an upstream quota or login failure; it includes
+  `Retry-After: 1`. Never switch model/account or reconnect to work around it.
+  A `gateway_retry_stopped` 502 instead means a backend attempt occurred but
+  the caller's dispatch budget expired before its 401 retry; it must not be
+  described as "nothing was sent". Account refresh is saved before the final
+  caller/deadline check at each actual backend send.
+  Router grants are report-only unless enforced: keep all
   model traffic on the private app network. Page passwords are not model keys.
 - Migration: **stop old app and callers first**, copy the entire app-data folder
   with its modes/owner, start only the new copy, Test and re-register. Rotation

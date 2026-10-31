@@ -30,7 +30,9 @@ while time.monotonic() - t0 < 10:
     try:
         code, body = req("/health"); break
     except OSError: time.sleep(0.1)
-assert json.loads(body) == {"status": "ok", "version": "0.3.0"}, body
+health = json.loads(body)
+assert {k: health[k] for k in ("status", "version")} == {"status": "ok", "version": "0.3.0"}, body
+assert health["gateway"] == {"active": 0, "waiting": 0, "rejected": 0, "cancelled": 0, "capacity": 8, "max_waiters": 32}, body
 code, body = req("/"); assert code == 200 and b"<title>ChatGPT</title>" in body
 h = urllib.request.urlopen(B + "/", timeout=30).headers
 assert h["Content-Security-Policy"].split("frame-ancestors ")[1].startswith(chr(39) + "self" + chr(39) + ";"), dict(h)

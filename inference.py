@@ -53,7 +53,7 @@ def admit(headers):
     return False
 
 
-def body(handler, max_body=MAX_BODY):
+def body(handler, max_body=MAX_BODY, deadline=None):
     if handler.headers.get("Transfer-Encoding") or handler.headers.get("Content-Encoding"):
         raise Fault(message="Encoded request bodies are unsupported.", status=415)
     if handler.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
@@ -74,7 +74,24 @@ def body(handler, max_body=MAX_BODY):
     try:
         if len(handler.headers.get_all("Content-Length", [])) != 1:
             raise ValueError()
-        data = json.loads(handler.rfile.read(n), object_pairs_hook=pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if deadline is None:
+            raw = handler.rfile.read(n)
+        else:
+            # A per-socket timeout alone is reset by every small arriving chunk.
+            # Gateway admission and upload share one absolute dispatch deadline.
+            chunks, left = [], n
+            while left:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Request body deadline.")
+                handler.connection.settimeout(remaining)
+                chunk = handler.rfile.read1(min(left, 65536))
+                if not chunk:
+                    raise ValueError()
+                chunks.append(chunk)
+                left -= len(chunk)
+            raw = b"".join(chunks)
+        data = json.loads(raw, object_pairs_hook=pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
         if not isinstance(data, dict):
             raise ValueError()
         return data
