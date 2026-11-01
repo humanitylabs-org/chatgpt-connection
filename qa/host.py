@@ -11,6 +11,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import codex
+from account_pool import Pool
 import server
 spec = importlib.util.spec_from_file_location("fixtures", ROOT / "test-chatgpt.py")
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
@@ -32,7 +33,10 @@ if __name__ == "__main__":
         backend = f.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
         threading.Thread(target=backend.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{backend.server_port}"
-        server.OWNER = codex.Connection(data, base, base + "/backend-api")
+        class QAConnection(codex.Connection):
+            def __init__(self, folder):
+                super().__init__(folder, base, base + "/backend-api")
+        server.OWNER = Pool(data, factory=QAConnection)
         server.HERMES_PASSWORD = ""
         page = server.Server(("127.0.0.1", 18841), Hosted)
         signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=page.shutdown, daemon=True).start())
