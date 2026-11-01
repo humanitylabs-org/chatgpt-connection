@@ -115,7 +115,8 @@ def owner():
     global OWNER
     with INIT_LOCK:
         if OWNER is None:
-            OWNER = codex.Connection(os.environ.get("APP_DATA_DIR", str(APP / ".data")))
+            from account_pool import Pool
+            OWNER = Pool(os.environ.get("APP_DATA_DIR", str(APP / ".data")))
     return OWNER
 
 
@@ -531,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(403, {"error": "box-only endpoint"})
             return self.json(200, connection())
         if path == "/api/accounts":
-            return self.json(200, {"accounts": [account_row()], "version": VERSION})
+            return self.json(200, {"accounts": owner().public(registration()) if hasattr(owner(), "public") else [account_row()], "version": VERSION})
         if path == "/.well-known/mcp/server-cards.json":
             return self.json(200, {"name": "wizard-chatgpt", "version": VERSION, "title": "ChatGPT", "remotes": [],
                         "x-wizard": {"provides": ["ai-connection", "chatgpt-subscription"], "contract": CONTRACT,
@@ -557,8 +558,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(403, {"ok": False, "message": "Use the ChatGPT page."})
         try:
             data = inference.body(self)
+            if path == "/api/chatgpt/prefer":
+                return self.json(200, owner().prefer(data.get("account_id")))
+            if path == "/api/chatgpt/add":
+                return self.json(200, owner().connect(add=True))
             if path == "/api/chatgpt/connect":
-                return self.json(200, owner().connect())
+                return self.json(200, owner().connect(data["account_id"]) if data.get("account_id") else owner().connect())
             if path == "/api/chatgpt/poll":
                 result = owner().poll(str(data.get("login_id", "")))
                 if result.get("status") == "approved":
@@ -568,14 +573,19 @@ class Handler(BaseHTTPRequestHandler):
                 owner().cancel()
                 return self.json(200, {"ok": True})
             if path == "/api/chatgpt/test":
-                owner().access()
-                models = owner().models()
-                plan, usage = owner().usage()
+                target = owner().entry(data["account_id"]) if data.get("account_id") else owner()
+                target.access()
+                models = target.models()
+                plan, usage = target.usage()
                 return self.json(200, {"ok": True, "message": "ChatGPT connection verified.", "plan": plan, "usage": usage, "models": models, "registration": reconcile()})
             if path == "/api/chatgpt/logout":
                 with REGISTRATION_LOCK:
-                    owner().disconnect()
-                    unregister()
+                    if data.get("account_id"):
+                        owner().disconnect(data["account_id"])
+                    else:
+                        owner().disconnect()
+                    if owner().stored().get("status") != "connected":
+                        unregister()
                 return self.json(200, {"ok": True, "registration": registration(), "message": "Disconnected locally; Hermes cleanup needs retry." if registration() == "unregister_failed" else "Disconnected. In-flight replies may finish; new requests are disabled."})
             self.json(404, {"ok": False, "message": "not found"})
         except (codex.Fault, inference.Fault) as e:

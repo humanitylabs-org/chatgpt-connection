@@ -26,3 +26,8 @@ input { background: var(--wz-surface); color: var(--wz-text); width: 100%; font:
 #message { min-height: 1.5em; }
 #message.bad { color: var(--wz-error); }
 #message.ok { color: var(--wz-accent); }
+.name, .detail { overflow-wrap: anywhere; }
+.plan { font-weight: 600; margin: 8px 0; }
+.limit { font-size: 14px; font-weight: 400; }
+.limit progress { display: block; width: 100%; height: 8px; accent-color: var(--wz-accent); margin-block: 6px; }
+.reset { display: block; color: var(--wz-text-secondary); font-size: 13px; }

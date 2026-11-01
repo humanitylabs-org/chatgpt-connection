@@ -3,6 +3,7 @@
 !server.py
 !inference.py
 !codex.py
+!account_pool.py
 !SKILL.md
 !LICENSE
 !static/
