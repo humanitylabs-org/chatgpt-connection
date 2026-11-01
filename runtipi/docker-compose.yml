@@ -98,8 +98,9 @@ services:
                   else:
                       text = out if isinstance(out, str) else json.dumps(out, indent=2)
                       r = {"content": [{"type": "text", "text": text[:200000]}]}
-              except Exception as e:  # tool errors go back to the agent, not the transport
-                  r = {"content": [{"type": "text", "text": "%s: %s" % (type(e).__name__, e)}], "isError": True}
+              except Exception:  # upstream errors may contain URLs, headers or secrets
+                  # Never return upstream exception text to the model.
+                  r = {"content": [{"type": "text", "text": "Connection request failed."}], "isError": True}
           elif m == "ping":
               r = {}
           elif i is None:

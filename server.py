@@ -634,6 +634,10 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        # BaseServer's default traceback may contain exception text from a provider.
+        sys.stderr.write("ChatGPT request failed.\n")
+
     def server_bind(self):
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = str(self.server_address[0]), self.server_address[1]

@@ -68,8 +68,10 @@ class Connection:
     def lock(self):
         # flock coordinates app workers; reread after acquiring, never cache refresh tokens.
         with self.mutex:
-            fd = os.open(self.data / ".oauth.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            fd = os.open(self.data / ".oauth.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
+                # Lifecycle permission repair must include an existing lock inode too.
+                os.fchmod(fd, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 yield
             finally:
@@ -77,6 +79,8 @@ class Connection:
                 os.close(fd)
 
     def atomic(self, name, obj):
+        # Reassert the directory on refresh, not only at process startup.
+        os.chmod(self.data, 0o700)
         fd, tmp = tempfile.mkstemp(prefix=".pending-", dir=self.data)
         try:
             with os.fdopen(fd, "w") as f:
