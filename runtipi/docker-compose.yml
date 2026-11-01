@@ -244,6 +244,8 @@ services:
   # Explicit image/recipe runtime identity: 1000:1000, never manager UID guessing.
   wizard-chatgpt-data-init:
     image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    x-runtipi:
+      wizard_grants: false
     user: "0:0"
     network_mode: none
     read_only: true
@@ -378,6 +380,8 @@ services:
       - prepare
   wizard-chatgpt-data-validate:
     image: python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    x-runtipi:
+      wizard_grants: false
     user: "1000:1000"
     network_mode: none
     read_only: true

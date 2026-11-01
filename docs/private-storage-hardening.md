@@ -21,6 +21,15 @@ Do not change mounts blindly: an empty new volume would hide the current connect
 
 ## Explicit fresh-install initialization (staged, not released)
 
+Both one-shots explicitly declare `x-runtipi.wizard_grants: false`. This requires
+the source-only WAM service opt-out repair: older managers silently ignore the
+field and still inject `/wizard`, `/wizard-requests` and their environment. Do
+not claim a data-only initializer on those managers. The declaration only removes
+connection injection, not shares or owner overrides. Acceptance must inspect the
+complete final post-storage/network Compose config and daemon inventory; normal
+front/engine grants and request functionality must remain unchanged. No release,
+runtime/inference change or live install is performed here.
+
 Reuse: EXTEND the app-owned recipe initializer; REUSE existing app credential writers and installed runtime identity 1000:1000. No view/shared shell function changes.
 
 Docker-created bind mounts hide the image-owned directory. The recipe now gates engine startup on two bounded one-shots: root with only CHOWN prepares an **empty root-owned** mount, then 1000:1000 with ALL capabilities dropped validates metadata through nofollow directory FDs. Both have no network, read-only rootfs and no-new-privileges. Validation mounts the exact data directory read-only. This split needs no DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER, SETUID or SETGID. Existing runtime services retain their original nonroot/read-only/cap-drop contract.

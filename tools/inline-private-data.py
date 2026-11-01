@@ -17,6 +17,8 @@ block = f'''  # BEGIN PRIVATE DATA INITIALIZATION
   # Explicit image/recipe runtime identity: 1000:1000, never manager UID guessing.
   {app}-data-init:
     image: {image}
+    x-runtipi:
+      wizard_grants: false
     user: "0:0"
     network_mode: none
     read_only: true
@@ -33,6 +35,8 @@ block = f'''  # BEGIN PRIVATE DATA INITIALIZATION
 {code}      - prepare
   {app}-data-validate:
     image: {image}
+    x-runtipi:
+      wizard_grants: false
     user: "1000:1000"
     network_mode: none
     read_only: true
