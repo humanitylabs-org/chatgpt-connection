@@ -245,7 +245,7 @@ class Connection:
             finally:
                 os.close(fd)
 
-    def open(self, method, path, body=None, extra=None, *, pre_dispatch=None):
+    def open(self, method, path, body=None, extra=None, *, pre_dispatch=None, timeout=120):
         """Optionally revalidate the caller after access, before every backend send.
 
         The guard receives whether a backend send was already attempted (401
@@ -272,7 +272,7 @@ class Connection:
             if pre_dispatch is not None:
                 pre_dispatch(attempt > 0)
             try:
-                return self.opener.open(req, timeout=120)
+                return self.opener.open(req, timeout=timeout)
             except HTTPError as e:
                 status = e.code
                 e.close()  # Never return upstream error bodies, headers, cookies or credentials.

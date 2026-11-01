@@ -267,8 +267,9 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 64
-    mem_limit: 128m
-    memswap_limit: 128m
+    # One admitted image upload: up to 16 x 25 MiB plus base64/JSON copies.
+    mem_limit: 4g
+    memswap_limit: 4g
     cpus: 0.5
     environment:
       WIZARD_CHATGPT_PORT: "8801"
