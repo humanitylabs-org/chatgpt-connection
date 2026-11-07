@@ -314,8 +314,39 @@ def account_row():
 GET_GATEWAY = {"/v1/models": "/codex/models?client_version=99.0.0",
                "/v1/api/codex/usage": "/wham/usage",
                "/v1/api/codex/rate-limit-reset-credits": "/wham/rate-limit-reset-credits"}
+IMAGE_GATEWAY = {"/v1/images/generations": "/codex/images/generations",
+                 "/v1/images/edits": "/codex/images/edits"}
 POST_GATEWAY = {"/v1/responses": "/codex/responses", "/v1/responses/compact": "/codex/responses/compact",
-                "/v1/api/codex/rate-limit-reset-credits/consume": "/wham/rate-limit-reset-credits/consume"}
+                "/v1/api/codex/rate-limit-reset-credits/consume": "/wham/rate-limit-reset-credits/consume",
+                **IMAGE_GATEWAY}
+MAX_INPUT_IMAGE = 25 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 16
+# Base64 expansion plus JSON/data-URL overhead, not a 16 MiB text-request cap.
+MAX_IMAGE_BODY = MAX_REFERENCE_IMAGES * (4 * ((MAX_INPUT_IMAGE + 2) // 3)) + 1024 * 1024
+MAX_IMAGE_RESPONSE = 64 * 1024 * 1024
+IMAGE_TIMEOUT = 300
+IMAGE_UPLOAD_SECONDS = 60
+# Large JSON bodies must not multiply the engine's bounded memory footprint.
+IMAGE_SLOT = threading.BoundedSemaphore(1)
+
+
+def validate_image_body(body):
+    images = body.get("images", [])
+    if not isinstance(images, list) or len(images) > MAX_REFERENCE_IMAGES:
+        raise inference.Fault("limit", "At most 16 reference images are supported.", 413)
+    for image in images:
+        value = image.get("image_url") if isinstance(image, dict) else None
+        if not isinstance(value, str) or not value.startswith("data:image/") or ";base64," not in value:
+            raise inference.Fault(message="Image references must be base64 image data URLs.", status=400)
+        encoded = value.split(",", 1)[1]
+        if len(encoded) > 4 * ((MAX_INPUT_IMAGE + 2) // 3):
+            raise inference.Fault("limit", "Reference image exceeds 25 MiB.", 413)
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise inference.Fault(message="Invalid image data URL.", status=400) from None
+        if len(raw) > MAX_INPUT_IMAGE:
+            raise inference.Fault("limit", "Reference image exceeds 25 MiB.", 413)
 
 
 # Node's built-in fetch (undici) always adds `Sec-Fetch-Mode: cors`, so that one header alone is a
@@ -425,17 +456,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         if refusal:
             return self.gateway_busy(refusal)
+        image = path in IMAGE_GATEWAY
+        image_slot = image and IMAGE_SLOT.acquire(blocking=False)
+        if image and not image_slot:
+            GATEWAY_SLOTS.release()
+            return self.gateway_busy("image_capacity")
+        if image:
+            # Queue admission remains unchanged; large uploads get their own bounded budget.
+            dispatch_by = time.monotonic() + IMAGE_UPLOAD_SECONDS
         started = dispatched = False
         try:
             self.connection.settimeout(min(120, max(.01, dispatch_by - time.monotonic())))
-            body = inference.body(self, 16 * 1024 * 1024, deadline=dispatch_by) if self.command == "POST" else None
-            self.connection.settimeout(120)
+            body = inference.body(self, MAX_IMAGE_BODY if image else 16 * 1024 * 1024, deadline=dispatch_by) if self.command == "POST" else None
+            if image:
+                validate_image_body(body)
+            self.connection.settimeout(IMAGE_TIMEOUT if image else 120)
             if path == "/v1/responses":
                 assert body is not None
                 body.update(store=False, stream=True, instructions=body.get("instructions") or "You are a helpful assistant.")
                 for k in ("max_output_tokens", "max_tokens", "temperature", "top_p", "frequency_penalty", "presence_penalty", "truncation"):
                     body.pop(k, None)
-            extra = {k: self.headers[k] for k in ("session_id", "x-client-request-id") if self.headers.get(k)}
+            extra = {k: self.headers[k] for k in ("session_id", "x-client-request-id", *(("x-codex-image-turn-id",) if image else ())) if self.headers.get(k)}
             if self.gateway_disconnected():
                 self.close_connection = True
                 return
@@ -452,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                 dispatched = True  # conservative: send may start immediately
 
             with owner().open(self.command if self.command != "HEAD" else "GET", routes[path], body, extra,
-                              pre_dispatch=pre_dispatch) as r:
+                              pre_dispatch=pre_dispatch, **({"timeout": IMAGE_TIMEOUT} if image else {})) as r:
                 if path == "/v1/models":
                     data = json.loads(r.read(codex.MAX_JSON))
                     rows = [m for m in data.get("models", []) if isinstance(m, dict) and m.get("slug")]
@@ -461,10 +502,14 @@ class Handler(BaseHTTPRequestHandler):
                     # its offline list, which drops account-gated models such as GPT-6 Astra.
                     return self.json(200, {"object": "list", "data": [{"id": m["slug"], "object": "model", "owned_by": "chatgpt"} for m in rows], "models": rows})
                 if path != "/v1/responses":
-                    raw = r.read(codex.MAX_JSON + 1)
-                    if len(raw) > codex.MAX_JSON:
+                    limit = MAX_IMAGE_RESPONSE if image else codex.MAX_JSON
+                    raw = r.read(limit + 1)
+                    if len(raw) > limit:
                         raise codex.Fault(message="ChatGPT response exceeded its limit.")
-                    return self.send(r.status, raw, "application/json")
+                    headers = {}
+                    if image and r.headers.get("x-codex-imagegen-request-id"):
+                        headers["x-codex-imagegen-request-id"] = r.headers["x-codex-imagegen-request-id"]
+                    return self.send(r.status, raw, "application/json", headers=headers)
                 self.send_response(r.status)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-store")
@@ -513,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
             if not started:
                 self.json(502, {"error": "ChatGPT gateway unavailable."})
         finally:
+            if image_slot:
+                IMAGE_SLOT.release()
             GATEWAY_SLOTS.release()
 
     def do_HEAD(self):
